@@ -1,0 +1,38 @@
+--- a/vendor/picoquic/picoquic/picoquic_utils.h
++++ b/vendor/picoquic/picoquic/picoquic_utils.h
+@@ -42,7 +42,7 @@
+ #define PRIst "zu"
+ #endif
+ 
+-#ifdef _WINDOWS
++#if defined(_WINDOWS) || defined(__WIN32__) || defined(__MINGW32__) || defined(_WIN32)
+ #ifndef _WINDOWS64
+ #ifndef PICOQUIC_USE_CONSTANT_TIME_MEMCMP
+ #define PICOQUIC_USE_CONSTANT_TIME_MEMCMP
+@@ -115,7 +115,7 @@
+ #define MAX(a, b) ((a) > (b) ? (a) : (b))
+ #endif
+ 
+-#ifdef _WINDOWS
++#if defined(_WINDOWS) || defined(__WIN32__) || defined(__MINGW32__) || defined(_WIN32)
+ #define PICOQUIC_FILE_SEPARATOR "\\"
+ #ifdef _WINDOWS64
+ #define PICOQUIC_DEFAULT_SOLUTION_DIR "..\\..\\"
+@@ -192,7 +192,7 @@
+ /* A set of portable function enables minimal support for
+  * thread, mutex and event in Windows and Linux
+  */
+-#ifdef _WINDOWS
++#if defined(_WINDOWS) || defined(__WIN32__) || defined(__MINGW32__) || defined(_WIN32)
+ #define picoquic_thread_t HANDLE
+ #define picoquic_thread_return_t DWORD WINAPI
+ typedef DWORD (WINAPI* picoquic_thread_fn)(LPVOID lpParam);
+@@ -325,7 +325,7 @@
+ 
+ #define PICOQUIC_TEST_SNI "test.example.com"
+ 
+-#ifdef _WINDOWS
++#if defined(_WINDOWS) || defined(__WIN32__) || defined(__MINGW32__) || defined(_WIN32)
+ #define PICOQUIC_TEST_FILE_SERVER_CERT "certs\\cert.pem"
+ #define PICOQUIC_TEST_FILE_SERVER_BAD_CERT "certs\\badcert.pem"
+ #define PICOQUIC_TEST_FILE_SERVER_KEY "certs\\key.pem"

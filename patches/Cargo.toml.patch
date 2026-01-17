@@ -1,0 +1,8 @@
+--- a/crates/slipstream-ffi/Cargo.toml
++++ b/crates/slipstream-ffi/Cargo.toml
+@@ -10,5 +10,6 @@
+ 
+ [dependencies]
+ libc = "0.2"
++winapi = { version = "0.3", features = ["winsock2", "ws2def", "ws2ipdef"] }
+ slipstream-core = { path = "../slipstream-core" }
