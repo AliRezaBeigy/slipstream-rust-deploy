@@ -94,6 +94,9 @@ Invoke-WebRequest -Uri "https://github.com/AliRezaBeigy/slipstream-rust-deploy/r
 | `--cert` | Path to server certificate for pinning | - | `--cert server.pem` |
 | `--congestion-control`, `-c` | Congestion control algorithm | - | `-c bbr` or `-c dcubic` |
 | `--keep-alive-interval`, `-t` | Keep-alive interval in ms | 400 | `-t 500` |
+| `--gso` | Enable UDP GSO (Generic Segmentation Offload) | Disabled | `--gso` |
+
+**Note on GSO**: GSO (Generic Segmentation Offload) is a Linux kernel feature that improves UDP performance by batching multiple packets together and letting the NIC hardware handle segmentation. This reduces CPU overhead for high-throughput transfers. Currently, the `--gso` flag is recognized but not yet fully implemented in the Rust client loop (a warning will be printed).
 
 ### Using the Tunnel
 
