@@ -24,28 +24,14 @@ Go into your name registrar's configuration panel and add these records:
 
 **Important**: Wait for DNS propagation (can take up to 24 hours) before testing your tunnel.
 
-## Features
-
-- **Multi-distribution support**: Fedora, Rocky Linux, CentOS, Debian, Ubuntu
-- **Interactive management menu**: Easy-to-use interface for all operations
-- **Self-updating capability**: Built-in update mechanism for the script
-- **Automatic detection**: OS and SSH port detection
-- **Source build**: Automatically builds slipstream-rust from source (no pre-built binaries required)
-- **Systemd service integration**: Creates and manages a dedicated systemd service for reliable operation, automatic startup on boot, and comprehensive logging
-- **Security hardened**: Non-root service execution with systemd security features
-- **Smart configuration**: Persistent settings and automatic certificate reuse
-- **Flexible tunneling**: SSH mode or SOCKS proxy mode
-- **Network ready**: Automatic firewall and iptables configuration
-- **TLS certificates**: Automatic generation and management of TLS certificates
-
 ## Quick Start
 
 ### Prerequisites
 - Linux server (Fedora, Rocky, CentOS, Debian, or Ubuntu)
 - Root access or sudo privileges
-- Internet connection for package downloads and building from source
+- Internet connection for downloading binaries or building from source
 - **Domain name with proper DNS configuration** (see DNS Domain Setup section above)
-- **Build dependencies**: The script will automatically install Rust toolchain, cmake, pkg-config, and OpenSSL development headers
+- **Build dependencies (only if building from source)**: The script will automatically install Rust toolchain, cmake, pkg-config, and OpenSSL development headers when prebuilt binaries are not available
 
 ### Installation
 
@@ -56,41 +42,70 @@ bash <(curl -Ls https://raw.githubusercontent.com/AliRezaBeigy/slipstream-rust-d
 
 This command will:
 1. Download and install the script to `/usr/local/bin/slipstream-rust-deploy`
-2. Install all required build dependencies (Rust, cmake, pkg-config, OpenSSL)
-3. Clone and build slipstream-rust from source
-4. Start the interactive setup process
-5. Configure your slipstream-rust server automatically
+2. Download prebuilt binary (if available for your architecture) OR install build dependencies and compile from source
+3. Start the interactive setup process
+4. Configure your slipstream-rust server automatically
 
-**Note**: The initial build process may take 10-30 minutes depending on your server's CPU and network speed.
+**Note**: For supported platforms (Linux x86_64, macOS ARM64), prebuilt binaries are used for faster installation. For other architectures, the script will build from source which may take 10-30 minutes.
 
-### Post-Installation Usage
+## Client Usage
 
-After installation, you can manage your slipstream-rust server using the installed command:
+After setting up the server, you can connect to it using the slipstream-rust client.
+
+### Download Client Binaries
+
+Prebuilt client binaries are available for the following platforms:
+
+| Platform | Download |
+|----------|----------|
+| Linux (x86_64) | [slipstream-client-linux-amd64](https://github.com/AliRezaBeigy/slipstream-rust-deploy/releases/latest/download/slipstream-client-linux-amd64) |
+| Windows (x86_64) | [slipstream-client-windows-amd64.exe](https://github.com/AliRezaBeigy/slipstream-rust-deploy/releases/latest/download/slipstream-client-windows-amd64.exe) |
+| macOS (ARM64) | [slipstream-client-darwin-arm64](https://github.com/AliRezaBeigy/slipstream-rust-deploy/releases/latest/download/slipstream-client-darwin-arm64) |
+
+### Quick Start (Linux/macOS)
 
 ```bash
-slipstream-rust-deploy
+# Download the client for your platform
+curl -Lo slipstream-client https://github.com/AliRezaBeigy/slipstream-rust-deploy/releases/latest/download/slipstream-client-linux-amd64
+chmod +x slipstream-client
+
+# Run the client (connects to your server via DNS tunnel)
+./slipstream-client --resolver YOUR_SERVER_IP:53 --domain s.example.com
 ```
 
-This will show an interactive menu with these options:
+### Quick Start (Windows)
 
-1. **Install/Reconfigure slipstream-rust server** - Set up or modify configuration
-2. **Update slipstream-rust-deploy script** - Check for and install script updates
-3. **Check service status** - View current service status
-4. **View service logs** - Monitor real-time logs (Ctrl+C to exit)
-5. **Show configuration info** - Display current configuration details
-0. **Exit** - Quit the menu
+```powershell
+# Download the client
+Invoke-WebRequest -Uri "https://github.com/AliRezaBeigy/slipstream-rust-deploy/releases/latest/download/slipstream-client-windows-amd64.exe" -OutFile "slipstream-client.exe"
 
-### Setup Process
+# Run the client
+.\slipstream-client.exe --resolver YOUR_SERVER_IP:53 --domain s.example.com
+```
 
-During the setup (option 1), you'll be prompted for:
-- **Domain** (e.g., `example.com`)
-- **Tunnel mode** (SSH or SOCKS)
+### Client Options
 
-The script will automatically:
-- Generate TLS certificates if they don't exist
-- Configure firewall and iptables rules
-- Set up the appropriate tunnel mode (Dante SOCKS or SSH)
-- Create and start the systemd service
+| Option | Description | Default | Example |
+|--------|-------------|---------|---------|
+| `--resolver`, `-r` | DNS resolver address (your server) | Required | `--resolver 203.0.113.2:53` |
+| `--authoritative` | Use authoritative mode for resolver | - | `--authoritative 203.0.113.2:53` |
+| `--domain`, `-d` | Tunnel domain (configured on server) | Required | `--domain s.example.com` |
+| `--tcp-listen-port`, `-l` | Local TCP port to listen on | 5201 | `-l 5201` |
+| `--cert` | Path to server certificate for pinning | - | `--cert server.pem` |
+| `--congestion-control`, `-c` | Congestion control algorithm | - | `-c bbr` or `-c dcubic` |
+| `--keep-alive-interval`, `-t` | Keep-alive interval in ms | 400 | `-t 500` |
+
+### Using the Tunnel
+
+The client listens on TCP port **5201** by default. Once connected, you can tunnel traffic through it.
+
+**SSH Mode**: If your server is configured in SSH mode, connect directly via the tunnel:
+```bash
+# Connect to SSH through the DNS tunnel
+ssh -o ProxyCommand="nc 127.0.0.1 5201" user@localhost
+```
+
+**SOCKS Mode**: If your server is configured with SOCKS mode, the tunnel connects to the Dante SOCKS proxy on the server. You can use tools like `proxychains` or configure applications to use the tunnel.
 
 ## Configuration
 
@@ -136,8 +151,8 @@ This provides quick access to:
 
 ```
 /usr/local/bin/slipstream-rust-deploy          # Management script
-/usr/local/bin/slipstream-server               # Main binary (built from source)
-/opt/slipstream-rust/                          # Source code and build directory
+/usr/local/bin/slipstream-server               # Main binary (prebuilt or built from source)
+/opt/slipstream-rust/                          # Source code and build directory (only when building from source)
 /etc/slipstream-rust/                          # Configuration directory
 ├── slipstream-rust-server.conf               # Main configuration
 ├── {domain}_cert.pem                         # TLS certificate (per domain)
@@ -156,6 +171,11 @@ sudo systemctl start slipstream-rust-server     # Start service
 sudo systemctl stop slipstream-rust-server      # Stop service
 sudo systemctl restart slipstream-rust-server   # Restart service
 sudo journalctl -u slipstream-rust-server -f    # View logs
+```
+
+**Uninstall**:
+```bash
+bash <(curl -Ls https://raw.githubusercontent.com/AliRezaBeigy/slipstream-rust-deploy/master/slipstream-rust-deploy.sh) uninstall           # Complete removal of slipstream-rust
 ```
 
 **Dante SOCKS Service (SOCKS mode only)**:
@@ -183,17 +203,20 @@ bash <(curl -Ls https://raw.githubusercontent.com/AliRezaBeigy/slipstream-rust-d
 # The script will detect and install updates automatically
 ```
 
-### Rebuilding from Source
+### Updating the Binary
 
-If you need to rebuild slipstream-rust from source (e.g., after updating the repository):
+To update to the latest version:
 
 ```bash
 slipstream-rust-deploy
 # Choose option 1: Install/Reconfigure slipstream-rust server
-# The script will automatically update the repository and rebuild
+# The script will automatically download the latest prebuilt binary or rebuild from source
 ```
 
-Or manually:
+### Building from Source (Manual)
+
+If you need to build slipstream-rust from source manually:
+
 ```bash
 cd /opt/slipstream-rust
 git pull
@@ -287,15 +310,30 @@ sudo cp target/release/slipstream-server /usr/local/bin/slipstream-server
 sudo systemctl restart slipstream-rust-server
 ```
 
+## Features
+
+- **Multi-distribution support**: Fedora, Rocky Linux, CentOS, Debian, Ubuntu
+- **Prebuilt binaries**: Automatically downloads prebuilt binaries for supported platforms (Linux x86_64, macOS ARM64)
+- **Fallback to source build**: Automatically builds from source when prebuilt binaries aren't available
+- **Interactive management menu**: Easy-to-use interface for all operations
+- **Self-updating capability**: Built-in update mechanism for the script
+- **Automatic detection**: OS and SSH port detection
+- **Systemd service integration**: Creates and manages a dedicated systemd service for reliable operation, automatic startup on boot, and comprehensive logging
+- **Security hardened**: Non-root service execution with systemd security features
+- **Smart configuration**: Persistent settings and automatic certificate reuse
+- **Flexible tunneling**: SSH mode or SOCKS proxy mode
+- **Network ready**: Automatic firewall and iptables configuration
+- **TLS certificates**: Automatic generation and management of TLS certificates
+
+
 ## Differences from C Implementation
 
 This deployment script is for the **Rust implementation** of slipstream, which differs from the C implementation in several ways:
 
-- **Build from source**: No pre-built binaries available; must build on the server
+- **Prebuilt binaries**: Prebuilt binaries are available for common platforms (Linux x86_64, Windows x86_64, macOS ARM64)
 - **TLS certificates**: Uses TLS certificates (cert.pem/key.pem) instead of public/private keys
-- **Build dependencies**: Requires Rust toolchain, cmake, pkg-config, and OpenSSL development headers
-- **Longer setup time**: Initial build can take 10-30 minutes
-- **Repository location**: Builds from `https://github.com/Mygod/slipstream-rust`
+- **Build dependencies**: When building from source, requires Rust toolchain, cmake, pkg-config, and OpenSSL development headers
+- **Repository location**: Uses binaries from or builds from `https://github.com/Mygod/slipstream-rust`
 
 ## Contributing
 

@@ -29,6 +29,7 @@ SCRIPT_INSTALL_PATH="/usr/local/bin/slipstream-rust-deploy"
 BUILD_DIR="/opt/slipstream-rust"
 REPO_URL="https://github.com/Mygod/slipstream-rust.git"
 SLIPSTREAM_PORT="5300"
+RELEASE_URL="https://github.com/AliRezaBeigy/slipstream-rust-deploy/releases/latest/download"
 
 # Global variable to track if update is available
 UPDATE_AVAILABLE=false
@@ -146,6 +147,98 @@ check_for_updates() {
     fi
 }
 
+# Function to uninstall slipstream-rust
+uninstall_slipstream() {
+    print_warning "This will completely remove slipstream-rust from your system."
+    print_question "Are you sure you want to uninstall? (y/N): "
+    read -r confirm
+
+    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+        print_status "Uninstall cancelled."
+        return 1
+    fi
+
+    print_status "Uninstalling slipstream-rust..."
+
+    # Stop and disable slipstream-rust-server service
+    if systemctl is-active --quiet slipstream-rust-server 2>/dev/null; then
+        print_status "Stopping slipstream-rust-server service..."
+        systemctl stop slipstream-rust-server
+    fi
+    if systemctl is-enabled --quiet slipstream-rust-server 2>/dev/null; then
+        print_status "Disabling slipstream-rust-server service..."
+        systemctl disable slipstream-rust-server
+    fi
+
+    # Remove systemd service file
+    if [ -f "${SYSTEMD_DIR}/slipstream-rust-server.service" ]; then
+        print_status "Removing systemd service file..."
+        rm -f "${SYSTEMD_DIR}/slipstream-rust-server.service"
+        systemctl daemon-reload
+    fi
+
+    # Stop and disable Dante if running
+    if systemctl is-active --quiet danted 2>/dev/null; then
+        print_status "Stopping Dante SOCKS service..."
+        systemctl stop danted
+    fi
+    if systemctl is-enabled --quiet danted 2>/dev/null; then
+        print_status "Disabling Dante SOCKS service..."
+        systemctl disable danted
+    fi
+
+    # Remove slipstream-server binary
+    if [ -f "${INSTALL_DIR}/slipstream-server" ]; then
+        print_status "Removing slipstream-server binary..."
+        rm -f "${INSTALL_DIR}/slipstream-server"
+    fi
+
+    # Remove configuration directory
+    if [ -d "$CONFIG_DIR" ]; then
+        print_status "Removing configuration directory..."
+        rm -rf "$CONFIG_DIR"
+    fi
+
+    # Remove build directory
+    if [ -d "$BUILD_DIR" ]; then
+        print_status "Removing build directory..."
+        rm -rf "$BUILD_DIR"
+    fi
+
+    # Remove slipstream user
+    if id "$SLIPSTREAM_USER" &>/dev/null; then
+        print_status "Removing slipstream user..."
+        userdel "$SLIPSTREAM_USER" 2>/dev/null || true
+    fi
+
+    # Remove iptables rules (best effort)
+    print_status "Removing iptables rules..."
+    iptables -D INPUT -p udp --dport "$SLIPSTREAM_PORT" -j ACCEPT 2>/dev/null || true
+    local interface
+    interface=$(ip route | grep default | awk '{print $5}' | head -1)
+    if [[ -n "$interface" ]]; then
+        iptables -t nat -D PREROUTING -i "$interface" -p udp --dport 53 -j REDIRECT --to-ports "$SLIPSTREAM_PORT" 2>/dev/null || true
+        if command -v ip6tables &> /dev/null; then
+            ip6tables -D INPUT -p udp --dport "$SLIPSTREAM_PORT" -j ACCEPT 2>/dev/null || true
+            ip6tables -t nat -D PREROUTING -i "$interface" -p udp --dport 53 -j REDIRECT --to-ports "$SLIPSTREAM_PORT" 2>/dev/null || true
+        fi
+    fi
+
+    # Ask about removing the deploy script itself
+    print_question "Do you also want to remove the slipstream-rust-deploy script? (y/N): "
+    read -r remove_script
+
+    if [[ "$remove_script" =~ ^[Yy]$ ]]; then
+        print_status "Removing slipstream-rust-deploy script..."
+        rm -f "$SCRIPT_INSTALL_PATH"
+        print_status "Uninstall complete! The deploy script has been removed."
+    else
+        print_status "Uninstall complete! The deploy script remains at $SCRIPT_INSTALL_PATH"
+    fi
+
+    return 0
+}
+
 # Function to show main menu
 show_menu() {
     echo ""
@@ -164,9 +257,10 @@ show_menu() {
     echo "3) Check service status"
     echo "4) View service logs"
     echo "5) Show configuration info"
+    echo "6) Uninstall slipstream-rust"
     echo "0) Exit"
     echo ""
-    print_question "Please select an option (0-5): "
+    print_question "Please select an option (0-6): "
 }
 
 # Function to handle menu selection
@@ -199,12 +293,17 @@ handle_menu() {
             5)
                 show_configuration_info
                 ;;
+            6)
+                if uninstall_slipstream; then
+                    exit 0
+                fi
+                ;;
             0)
                 print_status "Goodbye!"
                 exit 0
                 ;;
             *)
-                print_error "Invalid choice. Please enter 0-5."
+                print_error "Invalid choice. Please enter 0-6."
                 ;;
         esac
 
@@ -569,6 +668,76 @@ get_user_input() {
     print_status "  Tunnel mode: $TUNNEL_MODE"
 }
 
+# Function to detect architecture and get asset name
+get_asset_name() {
+    local arch
+    arch=$(uname -m)
+    local os
+    os=$(uname -s | tr '[:upper:]' '[:lower:]')
+
+    case "$os" in
+        linux)
+            case "$arch" in
+                x86_64|amd64)
+                    echo "linux-amd64"
+                    return 0
+                    ;;
+                *)
+                    return 1
+                    ;;
+            esac
+            ;;
+        darwin)
+            case "$arch" in
+                arm64|aarch64)
+                    echo "darwin-arm64"
+                    return 0
+                    ;;
+                *)
+                    return 1
+                    ;;
+            esac
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+# Function to download prebuilt binary
+download_prebuilt_binary() {
+    local asset_name
+    if ! asset_name=$(get_asset_name); then
+        print_warning "No prebuilt binary available for this architecture"
+        return 1
+    fi
+
+    print_status "Attempting to download prebuilt binary for $asset_name..."
+
+    local binary_name="slipstream-server-${asset_name}"
+    local download_url="${RELEASE_URL}/${binary_name}"
+    local temp_binary="/tmp/${binary_name}"
+
+    # Download the binary
+    if curl -fsSL "$download_url" -o "$temp_binary" 2>/dev/null; then
+        # Verify the download is a valid binary (not HTML error page)
+        if file "$temp_binary" | grep -qE "(executable|ELF|Mach-O)"; then
+            chmod +x "$temp_binary"
+            cp "$temp_binary" "$INSTALL_DIR/slipstream-server"
+            rm "$temp_binary"
+            print_status "Successfully downloaded prebuilt slipstream-server binary"
+            return 0
+        else
+            print_warning "Downloaded file is not a valid binary"
+            rm -f "$temp_binary"
+            return 1
+        fi
+    else
+        print_warning "Failed to download prebuilt binary from release"
+        return 1
+    fi
+}
+
 # Function to build slipstream-rust from source
 build_slipstream_rust() {
     print_status "Building slipstream-rust from source..."
@@ -630,6 +799,26 @@ build_slipstream_rust() {
         print_error "Built binary not found at expected location"
         exit 1
     fi
+}
+
+# Function to install slipstream-server (prebuilt or from source)
+install_slipstream_server() {
+    print_status "Installing slipstream-server..."
+
+    # First, try to download prebuilt binary
+    if download_prebuilt_binary; then
+        print_status "Using prebuilt binary - skipping build dependencies"
+        return 0
+    fi
+
+    # Fall back to building from source
+    print_status "Prebuilt binary not available, will build from source..."
+
+    # Check and install required tools for building
+    check_required_tools
+
+    # Build from source
+    build_slipstream_rust
 }
 
 # Function to create slipstream user
@@ -1089,6 +1278,12 @@ display_final_info() {
 
 # Main function
 main() {
+    # Handle command-line arguments
+    if [ "$1" = "uninstall" ]; then
+        uninstall_slipstream
+        exit $?
+    fi
+
     # If not running from installed location (curl/GitHub), install the script first
     if [ "$0" != "$SCRIPT_INSTALL_PATH" ]; then
         print_status "Installing slipstream-rust-deploy script..."
@@ -1105,14 +1300,11 @@ main() {
     # Detect OS and architecture
     detect_os
 
-    # Check and install required tools
-    check_required_tools
-
     # Get user input
     get_user_input
 
-    # Build slipstream-rust from source
-    build_slipstream_rust
+    # Install slipstream-server (prebuilt or from source)
+    install_slipstream_server
 
     # Create slipstream user
     create_slipstream_user
