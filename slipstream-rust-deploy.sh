@@ -805,6 +805,12 @@ build_slipstream_rust() {
 install_slipstream_server() {
     print_status "Installing slipstream-server..."
 
+    # Stop the service if it's running to avoid "Text file busy" error when copying
+    if systemctl is-active --quiet slipstream-rust-server 2>/dev/null; then
+        print_status "Stopping existing slipstream-rust-server service for update..."
+        systemctl stop slipstream-rust-server
+    fi
+
     # First, try to download prebuilt binary
     if download_prebuilt_binary; then
         print_status "Using prebuilt binary - skipping build dependencies"
@@ -1178,6 +1184,8 @@ Restart=always
 RestartSec=5
 KillMode=mixed
 TimeoutStopSec=5
+# Restart service every 60 minutes to work around server memory/state bugs
+RuntimeMaxSec=3600
 
 # Security settings
 NoNewPrivileges=true
