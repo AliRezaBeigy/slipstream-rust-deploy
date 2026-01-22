@@ -9,7 +9,9 @@ if [ -f "$RUNTIME_RS" ]; then
   echo "Patching $RUNTIME_RS for Windows socket types..."
   
   # Replace the libc import with conditional compilation
-  sed -i 's/use libc::{c_char, sockaddr_storage};/#[cfg(not(windows))]\nuse libc::{c_char, sockaddr_storage};\n#[cfg(windows)]\nuse winapi::shared::ws2def::{SOCKADDR_STORAGE as sockaddr_storage, SOCKADDR_IN, AF_INET, AF_INET6};\n#[cfg(windows)]\nuse winapi::shared::ws2ipdef::SOCKADDR_IN6_LH;\n#[cfg(windows)]\nuse libc::c_char;/' "$RUNTIME_RS"
+  # The actual import is: use libc::{c_char, c_int, c_ulong, size_t, sockaddr_storage};
+  # Replace with conditional: keep all types for non-Windows, split for Windows
+  sed -i 's/use libc::{c_char, c_int, c_ulong, size_t, sockaddr_storage};/#[cfg(not(windows))]\nuse libc::{c_char, c_int, c_ulong, size_t, sockaddr_storage};\n#[cfg(windows)]\nuse winapi::shared::ws2def::{SOCKADDR_STORAGE as sockaddr_storage, SOCKADDR_IN, AF_INET, AF_INET6};\n#[cfg(windows)]\nuse winapi::shared::ws2ipdef::SOCKADDR_IN6_LH;\n#[cfg(windows)]\nuse libc::{c_char, c_int, c_ulong, size_t};/' "$RUNTIME_RS"
   
   # Add #[cfg(not(windows))] before socket_addr_to_storage function
   sed -i 's/^pub fn socket_addr_to_storage(addr: SocketAddr)/#[cfg(not(windows))]\npub fn socket_addr_to_storage(addr: SocketAddr)/' "$RUNTIME_RS"
@@ -172,11 +174,20 @@ if [ -f "$UDP_FALLBACK_RS" ]; then
   if grep -q "fn dummy_sockaddr_storage()" "$UDP_FALLBACK_RS"; then
     echo "Patching dummy_sockaddr_storage in $UDP_FALLBACK_RS..."
     
-    # Add Windows conditional for dummy_sockaddr_storage (handling potential whitespace)
-    sed -i 's/^\(fn dummy_sockaddr_storage()\)/#[cfg(not(windows))]\n\1/' "$UDP_FALLBACK_RS"
+    # Check if already patched
+    if grep -q "#\[cfg(not(windows))\]" "$UDP_FALLBACK_RS" && grep -A1 "#\[cfg(not(windows))\]" "$UDP_FALLBACK_RS" | grep -q "fn dummy_sockaddr_storage()"; then
+      echo "dummy_sockaddr_storage already has #[cfg(not(windows))], skipping..."
+    else
+      # Use perl for more reliable in-place editing
+      perl -i -pe 's/^fn dummy_sockaddr_storage\(\)/#[cfg(not(windows))]\nfn dummy_sockaddr_storage()/' "$UDP_FALLBACK_RS"
+    fi
     
-    # Append Windows version of dummy_sockaddr_storage
-    cat >> "$UDP_FALLBACK_RS" << 'DUMMY_STORAGE_UDP'
+    # Check if Windows version already exists
+    if grep -q "#\[cfg(windows)\]" "$UDP_FALLBACK_RS" && grep -A1 "#\[cfg(windows)\]" "$UDP_FALLBACK_RS" | grep -q "fn dummy_sockaddr_storage()"; then
+      echo "Windows version of dummy_sockaddr_storage already exists, skipping..."
+    else
+      # Append Windows version of dummy_sockaddr_storage
+      cat >> "$UDP_FALLBACK_RS" << 'DUMMY_STORAGE_UDP'
 
 #[cfg(windows)]
 fn dummy_sockaddr_storage() -> slipstream_ffi::SockaddrStorage {
@@ -191,6 +202,7 @@ fn dummy_sockaddr_storage() -> slipstream_ffi::SockaddrStorage {
     )
 }
 DUMMY_STORAGE_UDP
+    fi
     
     echo "Successfully patched dummy_sockaddr_storage in $UDP_FALLBACK_RS"
   fi

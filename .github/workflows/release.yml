@@ -150,6 +150,7 @@ jobs:
               
               if ($libDir) {
                 echo "OPENSSL_DIR=$path" >> $env:GITHUB_ENV
+                echo "OPENSSL_ROOT_DIR=$path" >> $env:GITHUB_ENV
                 echo "OPENSSL_LIB_DIR=$libDir" >> $env:GITHUB_ENV
                 echo "OPENSSL_INCLUDE_DIR=$path\include" >> $env:GITHUB_ENV
                 Write-Host "OpenSSL configured at $path (libs in $libDir)"
@@ -447,9 +448,12 @@ jobs:
           if [ -f "$BUILD_RS" ]; then
             echo "Patching $BUILD_RS for Windows..."
             
-            # Create the replacement block for OpenSSL/pthread section
-            # Find and replace the three println! lines with Windows-aware version
-            sed -i 's/println!("cargo:rustc-link-lib=dylib=ssl");/let target = env::var("TARGET").unwrap_or_default();\n    let is_windows = target.contains("windows") || target.contains("pc-windows");\n\n    if is_windows {\n        if let Ok(openssl_lib_dir) = env::var("OPENSSL_LIB_DIR") {\n            println!("cargo:rustc-link-search=native={}", openssl_lib_dir);\n        }\n        println!("cargo:rustc-link-lib=dylib=libssl");\n        println!("cargo:rustc-link-lib=dylib=libcrypto");\n    } else {\n        println!("cargo:rustc-link-lib=dylib=ssl");\n        println!("cargo:rustc-link-lib=dylib=crypto");\n    }/' "$BUILD_RS"
+            # First, add is_windows definition right after target is defined
+            # This ensures it's in scope for both ssl/crypto and pthread replacements
+            sed -i 's/let target = env::var("TARGET").unwrap_or_default();/let target = env::var("TARGET").unwrap_or_default();\n    let is_windows = target.contains("windows") || target.contains("pc-windows");/' "$BUILD_RS"
+            
+            # Replace ssl println with Windows-aware version (using is_windows from above)
+            sed -i 's/println!("cargo:rustc-link-lib=dylib=ssl");/if is_windows {\n        if let Ok(openssl_lib_dir) = env::var("OPENSSL_LIB_DIR") {\n            println!("cargo:rustc-link-search=native={}", openssl_lib_dir);\n        }\n        println!("cargo:rustc-link-lib=dylib=libssl");\n        println!("cargo:rustc-link-lib=dylib=libcrypto");\n    } else {\n        println!("cargo:rustc-link-lib=dylib=ssl");\n        println!("cargo:rustc-link-lib=dylib=crypto");\n    }/' "$BUILD_RS"
             
             # Remove the now-duplicate crypto line
             sed -i '/println!("cargo:rustc-link-lib=dylib=crypto");/d' "$BUILD_RS"
