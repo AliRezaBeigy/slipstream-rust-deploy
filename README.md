@@ -83,6 +83,10 @@ Invoke-WebRequest -Uri "https://github.com/AliRezaBeigy/slipstream-rust-deploy/r
 .\slipstream-client.exe --resolver YOUR_SERVER_IP:53 --domain s.example.com
 ```
 
+**Windows Tip**: slipstream-rust relies on the Microsoft Visual C++ operating environment. If an error prompts "Cannot find MSVC*.dll" when the program starts, please click the link below to download and install the Microsoft Visual C++ operating environment.
+
+[Download the latest supported version of Visual C++ Redistributable Package | Microsoft Docs](https://docs.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist?view=msvc-170)
+
 ### Client Options
 
 | Option | Description | Default | Example |

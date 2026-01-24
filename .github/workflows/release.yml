@@ -133,7 +133,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          choco install cmake openssl pkgconfiglite strawberryperl -y
+          choco install cmake pkgconfiglite strawberryperl -y
           
           # Find and configure OpenSSL
           $opensslPaths = @(
@@ -157,6 +157,68 @@ jobs:
                 break
               }
             }
+          }
+
+      - name: Setup Perl for OpenSSL vendored build (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          # Find Strawberry Perl installation
+          $perlPaths = @(
+            "C:\Strawberry\perl\bin",
+            "C:\Program Files\Strawberry\perl\bin",
+            "${env:ProgramFiles}\Strawberry\perl\bin"
+          )
+          
+          $perlPath = $null
+          $perlExe = $null
+          foreach ($path in $perlPaths) {
+            $exe = Join-Path $path "perl.exe"
+            if (Test-Path $exe) {
+              $perlPath = $path
+              $perlExe = $exe
+              Write-Host "Found Strawberry Perl at $path"
+              break
+            }
+          }
+          
+          if ($perlExe) {
+            # Add Strawberry Perl to PATH (must be first to override Git Bash Perl)
+            $env:Path = "$perlPath;$env:Path"
+            echo "PATH=$perlPath`;$env:Path" >> $env:GITHUB_ENV
+            
+            # Set PERL environment variable to ensure it's used by build scripts
+            echo "PERL=$perlExe" >> $env:GITHUB_ENV
+            
+            # Verify Perl is accessible
+            $perlVersion = & $perlExe -v 2>&1 | Select-Object -First 1
+            Write-Host "Perl version: $perlVersion"
+            
+            # Check if Locale::Maketext::Simple is already available
+            $moduleCheck = & $perlExe -e "use Locale::Maketext::Simple; print 'OK'" 2>&1
+            if ($LASTEXITCODE -eq 0) {
+              Write-Host "Locale::Maketext::Simple is already available"
+            } else {
+              Write-Host "Locale::Maketext::Simple not found, attempting to install..."
+              # Use cpanm if available, otherwise cpan
+              $cpanmExe = Join-Path $perlPath "cpanm.bat"
+              if (Test-Path $cpanmExe) {
+                Write-Host "Installing Locale::Maketext::Simple using cpanm..."
+                & $cpanmExe --notest Locale::Maketext::Simple 2>&1 | Out-String | Write-Host
+              } else {
+                Write-Host "Installing Locale::Maketext::Simple using cpan..."
+                $cpanExe = Join-Path $perlPath "cpan.bat"
+                if (Test-Path $cpanExe) {
+                  # Use non-interactive mode with auto-confirm
+                  echo "yes" | & $cpanExe -i Locale::Maketext::Simple 2>&1 | Out-String | Write-Host
+                } else {
+                  Write-Warning "Neither cpanm nor cpan found. Module installation skipped."
+                  Write-Warning "Build may fail if module is required."
+                }
+              }
+            }
+          } else {
+            Write-Warning "Strawberry Perl not found. OpenSSL vendored build may fail."
           }
 
       - name: Setup OpenSSL (macOS)
@@ -516,7 +578,11 @@ jobs:
             export CARGO_TARGET_AARCH64_APPLE_DARWIN_RUSTFLAGS="-C link-arg=-L/opt/homebrew/opt/openssl@3/lib"
           fi
           
-          cargo build --release --target ${{ matrix.target }} -p slipstream-client -p slipstream-server
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            cargo build --release --target ${{ matrix.target }} -p slipstream-client -p slipstream-server --features openssl-vendored
+          else
+            cargo build --release --target ${{ matrix.target }} -p slipstream-client -p slipstream-server
+          fi
         env:
           PICOQUIC_FETCH_PTLS: ON
           PICOQUIC_AUTO_BUILD: 1
