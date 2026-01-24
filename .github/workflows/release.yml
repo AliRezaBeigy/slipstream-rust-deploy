@@ -58,7 +58,11 @@ jobs:
         id: get_commit
         working-directory: slipstream-rust
         shell: bash
-        run: echo "commit=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
+        run: |
+          FULL_COMMIT=$(git rev-parse HEAD)
+          SHORT_COMMIT=$(git rev-parse --short=7 HEAD)
+          echo "commit=${FULL_COMMIT}" >> $GITHUB_OUTPUT
+          echo "short_commit=${SHORT_COMMIT}" >> $GITHUB_OUTPUT
 
       - name: Cache Rust dependencies
         uses: actions/cache@v4
@@ -596,13 +600,35 @@ jobs:
           cp "slipstream-rust/target/${{ matrix.target }}/release/slipstream-server${{ env.EXE_EXT }}" "build_assets/slipstream-server-${{ env.ASSET_NAME }}${{ env.EXE_EXT }}"
           if [ "${{ runner.os }}" != "Windows" ]; then chmod +x build_assets/*; fi
 
+      - name: Create release if it doesn't exist
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.get_commit.outputs.short_commit }}"
+          REPO="${{ github.repository }}"
+          # Check if release exists
+          if ! curl -s -H "Authorization: token ${GITHUB_TOKEN}" \
+            "https://api.github.com/repos/${REPO}/releases/tags/${TAG}" > /dev/null 2>&1; then
+            # Create release if it doesn't exist
+            echo "Creating release for tag ${TAG}"
+            curl -X POST \
+              -H "Authorization: token ${GITHUB_TOKEN}" \
+              -H "Accept: application/vnd.github.v3+json" \
+              "https://api.github.com/repos/${REPO}/releases" \
+              -d "{\"tag_name\":\"${TAG}\",\"name\":\"Release ${TAG}\",\"body\":\"Release for slipstream-rust commit ${TAG}\\n\\nThis release contains prebuilt binaries for:\\n- Linux (x86_64)\\n- Windows (x86_64)\\n- macOS (ARM64)\",\"draft\":false,\"prerelease\":false}"
+          else
+            echo "Release for tag ${TAG} already exists"
+          fi
+
       - name: Upload client binary to release
         uses: svenstaro/upload-release-action@v2
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
           file: build_assets/slipstream-client-${{ env.ASSET_NAME }}${{ env.EXE_EXT }}
           asset_name: slipstream-client-${{ env.ASSET_NAME }}${{ env.EXE_EXT }}
-          tag: ${{ github.ref }}
+          tag: ${{ steps.get_commit.outputs.short_commit }}
+          release_name: Release ${{ steps.get_commit.outputs.short_commit }}
           overwrite: true
 
       - name: Upload server binary to release
@@ -611,7 +637,8 @@ jobs:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
           file: build_assets/slipstream-server-${{ env.ASSET_NAME }}${{ env.EXE_EXT }}
           asset_name: slipstream-server-${{ env.ASSET_NAME }}${{ env.EXE_EXT }}
-          tag: ${{ github.ref }}
+          tag: ${{ steps.get_commit.outputs.short_commit }}
+          release_name: Release ${{ steps.get_commit.outputs.short_commit }}
           overwrite: true
 
       - name: Upload client artifact

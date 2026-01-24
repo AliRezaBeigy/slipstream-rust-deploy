@@ -715,8 +715,27 @@ download_prebuilt_binary() {
     print_status "Attempting to download prebuilt binary for $asset_name..."
 
     local binary_name="slipstream-server-${asset_name}"
-    local download_url="${RELEASE_URL}/${binary_name}"
     local temp_binary="/tmp/${binary_name}"
+    local download_url=""
+    local latest_tag=""
+
+    print_status "Fetching latest release information..."
+    local api_response
+    api_response=$(curl -fsSL "https://api.github.com/repos/AliRezaBeigy/slipstream-rust-deploy/releases/latest" 2>/dev/null)
+    
+    if [ -n "$api_response" ]; then
+        latest_tag=$(echo "$api_response" | grep -o '"tag_name": "[^"]*"' | cut -d'"' -f4)
+        if [ -n "$latest_tag" ]; then
+            print_status "Found latest release tag: $latest_tag"
+            download_url="https://github.com/AliRezaBeigy/slipstream-rust-deploy/releases/download/${latest_tag}/${binary_name}"
+        fi
+    fi
+
+    if [ -z "$download_url" ]; then
+        print_warning "Could not fetch release tag from API, trying /latest/download endpoint..."
+        download_url="${RELEASE_URL}/${binary_name}"
+    fi
+    print_status "Downloading prebuilt slipstream-server binary from: $download_url"
 
     # Download the binary
     if curl -fsSL "$download_url" -o "$temp_binary" 2>/dev/null; then
