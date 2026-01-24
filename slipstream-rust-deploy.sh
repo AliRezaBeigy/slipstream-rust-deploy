@@ -341,6 +341,14 @@ CERT_FILE="$CERT_FILE"
 KEY_FILE="$KEY_FILE"
 EOF
 
+    if [ "$TUNNEL_MODE" = "socks" ]; then
+        cat >> "$CONFIG_FILE" << EOF
+SOCKS_AUTH_ENABLED="${SOCKS_AUTH_ENABLED:-no}"
+SOCKS_USERNAME="${SOCKS_USERNAME:-}"
+SOCKS_PASSWORD="${SOCKS_PASSWORD:-}"
+EOF
+    fi
+
     chmod 640 "$CONFIG_FILE"
     chown root:"$SLIPSTREAM_USER" "$CONFIG_FILE"
     print_status "Configuration saved to $CONFIG_FILE"
@@ -392,6 +400,11 @@ show_configuration_info() {
         echo ""
         echo -e "${BLUE}SOCKS Proxy Information:${NC}"
         echo -e "SOCKS proxy is running on ${YELLOW}127.0.0.1:1080${NC}"
+        if [[ "${SOCKS_AUTH_ENABLED:-no}" == "yes" && -n "${SOCKS_USERNAME:-}" ]]; then
+            echo -e "Authentication: ${GREEN}Enabled${NC} (username: ${YELLOW}$SOCKS_USERNAME${NC})"
+        else
+            echo -e "Authentication: ${YELLOW}Disabled${NC}"
+        fi
         echo -e "${BLUE}Dante service commands:${NC}"
         echo -e "  Status:  ${YELLOW}systemctl status danted${NC}"
         echo -e "  Stop:    ${YELLOW}systemctl stop danted${NC}"
@@ -663,9 +676,104 @@ get_user_input() {
         esac
     done
 
+    SOCKS_AUTH_ENABLED="no"
+    SOCKS_USERNAME=""
+    SOCKS_PASSWORD=""
+    
+    if [ "$TUNNEL_MODE" = "socks" ]; then
+        if load_existing_config; then
+            if [[ -n "${SOCKS_AUTH_ENABLED:-}" ]]; then
+                local existing_auth="$SOCKS_AUTH_ENABLED"
+                local existing_username="${SOCKS_USERNAME:-}"
+            fi
+        fi
+        
+        while true; do
+            if [[ -n "${existing_auth:-}" ]]; then
+                local auth_status="disabled"
+                if [[ "$existing_auth" == "yes" ]]; then
+                    auth_status="enabled"
+                fi
+                print_question "Enable username/password authentication for SOCKS proxy? (current: $auth_status) [y/N]: "
+            else
+                print_question "Enable username/password authentication for SOCKS proxy? [y/N]: "
+            fi
+            read -r enable_auth
+            
+            if [[ -z "$enable_auth" && -n "${existing_auth:-}" ]]; then
+                SOCKS_AUTH_ENABLED="$existing_auth"
+                if [[ "$existing_auth" == "yes" ]]; then
+                    SOCKS_USERNAME="$existing_username"
+                fi
+                break
+            fi
+            
+            case $enable_auth in
+                [Yy]|[Yy][Ee][Ss])
+                    SOCKS_AUTH_ENABLED="yes"
+                    
+                    while true; do
+                        if [[ -n "${existing_username:-}" && "$SOCKS_AUTH_ENABLED" == "yes" ]]; then
+                            print_question "Enter SOCKS username (current: $existing_username): "
+                        else
+                            print_question "Enter SOCKS username: "
+                        fi
+                        read -r SOCKS_USERNAME
+                        
+                        if [[ -z "$SOCKS_USERNAME" && -n "${existing_username:-}" ]]; then
+                            SOCKS_USERNAME="$existing_username"
+                        fi
+                        
+                        if [[ -n "$SOCKS_USERNAME" ]]; then
+                            break
+                        else
+                            print_error "Please enter a valid username"
+                        fi
+                    done
+                    
+                    while true; do
+                        print_question "Enter SOCKS password: "
+                        read -rs SOCKS_PASSWORD
+                        echo ""  # New line after hidden password input
+                        
+                        if [[ -z "$SOCKS_PASSWORD" ]]; then
+                            print_error "Please enter a valid password"
+                        else
+                            print_question "Confirm SOCKS password: "
+                            read -rs SOCKS_PASSWORD_CONFIRM
+                            echo ""  # New line after hidden password input
+                            
+                            if [[ "$SOCKS_PASSWORD" != "$SOCKS_PASSWORD_CONFIRM" ]]; then
+                                print_error "Passwords do not match. Please try again."
+                                SOCKS_PASSWORD=""
+                            else
+                                break
+                            fi
+                        fi
+                    done
+                    break
+                    ;;
+                [Nn]|[Nn][Oo]|"")
+                    SOCKS_AUTH_ENABLED="no"
+                    break
+                    ;;
+                *)
+                    print_error "Invalid choice. Please enter y or n"
+                    ;;
+            esac
+        done
+    fi
+
     print_status "Configuration:"
     print_status "  Domain: $DOMAIN"
     print_status "  Tunnel mode: $TUNNEL_MODE"
+    if [ "$TUNNEL_MODE" = "socks" ]; then
+        if [ "$SOCKS_AUTH_ENABLED" = "yes" ]; then
+            print_status "  SOCKS authentication: enabled (username: $SOCKS_USERNAME)"
+        else
+            print_status "  SOCKS authentication: disabled"
+        fi
+    fi
 }
 
 # Function to detect architecture and get asset name
@@ -1113,6 +1221,30 @@ setup_dante() {
         external_interface="eth0"  # fallback
     fi
 
+    local socks_method="none"
+    
+    if [[ "${SOCKS_AUTH_ENABLED:-no}" == "yes" && -n "${SOCKS_USERNAME:-}" && -n "${SOCKS_PASSWORD:-}" ]]; then
+        socks_method="username"
+        
+        if ! id "$SOCKS_USERNAME" &>/dev/null; then
+            print_status "Creating system user for SOCKS authentication: $SOCKS_USERNAME"
+            useradd -r -s /bin/false -M "$SOCKS_USERNAME" 2>/dev/null || {
+                print_error "Failed to create system user: $SOCKS_USERNAME"
+                return 1
+            }
+            print_status "System user created: $SOCKS_USERNAME"
+        else
+            print_status "System user already exists: $SOCKS_USERNAME"
+        fi
+        
+        print_status "Setting password for SOCKS user: $SOCKS_USERNAME"
+        echo "$SOCKS_USERNAME:$SOCKS_PASSWORD" | chpasswd 2>/dev/null || {
+            print_error "Failed to set password for user: $SOCKS_USERNAME"
+            return 1
+        }
+        print_status "Password set successfully for SOCKS user"
+    fi
+
     # Configure Dante
     cat > /etc/danted.conf << EOF
 # Dante SOCKS server configuration
@@ -1127,7 +1259,10 @@ internal: 127.0.0.1 port = 1080
 external: $external_interface
 
 # Authentication method
-socksmethod: none
+socksmethod: $socks_method
+EOF
+
+    cat >> /etc/danted.conf << EOF
 
 # Compatibility settings
 compatibility: sameport
@@ -1143,6 +1278,15 @@ client pass {
 socks pass {
     from: 127.0.0.0/8 to: 0.0.0.0/0
     command: bind connect udpassociate
+EOF
+
+    if [[ -n "$passwd_file" ]]; then
+        cat >> /etc/danted.conf << EOF
+    method: username
+EOF
+    fi
+
+    cat >> /etc/danted.conf << EOF
     log: error
 }
 
@@ -1164,6 +1308,11 @@ EOF
 
     print_status "Dante SOCKS proxy configured and started on port 1080"
     print_status "External interface: $external_interface"
+    if [[ "$socks_method" == "username" ]]; then
+        print_status "SOCKS authentication: enabled (username: $SOCKS_USERNAME)"
+    else
+        print_status "SOCKS authentication: disabled"
+    fi
 }
 
 # Function to create systemd service
@@ -1285,6 +1434,11 @@ print_success_box() {
         echo ""
         echo -e "${header_color}SOCKS Proxy Information:${reset}"
         echo -e "${text_color}SOCKS proxy is running on 127.0.0.1:1080${reset}"
+        if [[ "${SOCKS_AUTH_ENABLED:-no}" == "yes" && -n "${SOCKS_USERNAME:-}" ]]; then
+            echo -e "${text_color}Authentication: ${key_color}Enabled${reset} (username: ${key_color}$SOCKS_USERNAME${reset})"
+        else
+            echo -e "${text_color}Authentication: ${key_color}Disabled${reset}"
+        fi
         echo -e "${text_color}Dante service commands:${reset}"
         echo -e "  ${text_color}Status:  systemctl status danted${reset}"
         echo -e "  ${text_color}Stop:    systemctl stop danted${reset}"
