@@ -592,11 +592,11 @@ jobs:
 
           # For macOS Intel cross-compilation from ARM64 runner
           if [[ "${{ matrix.target }}" == "x86_64-apple-darwin" ]]; then
-            # Set C/C++ compiler to cross-compile for x86_64
-            export CC="clang -arch x86_64"
-            export CXX="clang++ -arch x86_64"
-            export CFLAGS="-arch x86_64"
-            export CXXFLAGS="-arch x86_64"
+            # Set target-specific C/C++ compiler flags for cc crate
+            export CC_x86_64_apple_darwin=clang
+            export CXX_x86_64_apple_darwin=clang++
+            export CFLAGS_x86_64_apple_darwin="-arch x86_64"
+            export CXXFLAGS_x86_64_apple_darwin="-arch x86_64"
 
             # Use x86_64 OpenSSL from Intel Homebrew prefix
             export OPENSSL_LIB_DIR=/usr/local/opt/openssl@3/lib
