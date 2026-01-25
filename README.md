@@ -114,6 +114,62 @@ ssh -o ProxyCommand="nc 127.0.0.1 5201" user@localhost
 
 **SOCKS Mode**: If your server is configured with SOCKS mode, the tunnel connects to the Dante SOCKS proxy on the server. You can use tools like `proxychains` or configure applications to use the tunnel.
 
+**Shadowsocks Mode**: If your server is configured with the new Shadowsocks option, slipstream tunnels traffic to a Shadowsocks server running locally on the server (listening on `127.0.0.1` by default). Typical usage is to run `ss-local` on the client and forward its outbound encrypted connection through the slipstream client.
+
+Example `ss-local` JSON config (client):
+
+```json
+{
+	"server": "127.0.0.1",
+	"server_port": 8388,
+	"local_address": "127.0.0.1",
+	"local_port": 10800,
+	"password": "your_password",
+	"method": "aes-256-gcm"
+}
+```
+
+
+Run `ss-local` and instruct it to go through slipstream's SOCKS proxy produced by `slipstream-client`:
+
+```bash
+# Start slipstream client (creates local SOCKS proxy on 127.0.0.1:1080)
+./slipstream-client --resolver YOUR_SERVER_IP:53 --domain s.example.com --listen 127.0.0.1:1080
+
+# Run ss-local, forwarding outbound connection through slipstream's SOCKS proxy
+ss-local -c config.json --socks5-proxy 127.0.0.1:1080
+
+# Point your applications at ss-local's local port (127.0.0.1:10800)
+```
+
+### Quick Start (Android)
+
+You can use the [slipstream-plugin-android](https://github.com/Mygod/slipstream-plugin-android) with the [Shadowsocks Android app](https://github.com/shadowsocks/shadowsocks-android) to connect from your Android device.
+
+**Instructions:**
+
+1. Install the Shadowsocks app from the Play Store or [GitHub releases](https://github.com/shadowsocks/shadowsocks-android/releases).
+2. Install the slipstream plugin from [Mygod's slipstream-plugin-android releases](https://github.com/Mygod/slipstream-plugin-android/releases).
+3. In the Shadowsocks app, add a new profile for your server:
+     - **Server**: `test.example.com` -> your A record domain
+    - **Port**: `53` -> Important: Use port 53 for DNS tunneling
+    - **Password**: Your Shadowsocks password
+4. In the profile's "Plugin" settings, select `slipstream` as the plugin.
+5. Configure the plugin options as follows:
+	 - **Plugin options:**
+		 - Domain: `s.example.com` -> your NS record domain
+         - Authoritative mode: off
+         - Pinned certificate: leave blank
+         - Keep-alive interval: leave blank  
+    DNS Resolver is not managed by the plugin; it uses the Shadowsocks app's DNS settings.
+6. Save and connect. The Shadowsocks app will tunnel traffic through the slipstream DNS tunnel using the plugin.
+
+For more details and troubleshooting, see the [slipstream-plugin-android documentation](https://github.com/Mygod/slipstream-plugin-android).
+
+Notes:
+- The server-side Shadowsocks instance is intentionally bound to `127.0.0.1` and the slipstream server forwards DNS-tunneled traffic to that local address. Do not point `ss-server` at the public interface.
+- The deploy script writes the server config to `/etc/shadowsocks-libev/config.json` and manages the `shadowsocks-libev-server@config` (or `shadowsocks-libev`) systemd service when available.
+
 ## Configuration
 
 ### Tunnel Modes
@@ -122,6 +178,11 @@ ssh -o ProxyCommand="nc 127.0.0.1 5201" user@localhost
 - Sets up integrated Dante SOCKS5 proxy
 - Listens on `127.0.0.1:1080`
 - Provides full internet proxy capabilities
+
+**Shadowsocks Mode (Option 3)**
+- Sets up a local `shadowsocks-libev` server bound to `127.0.0.1` (default port 8388)
+- Slipstream tunnels DNS traffic to the Shadowsocks server so clients can run `ss-local` locally and send encrypted traffic through the tunnel
+- Server config path: `/etc/shadowsocks-libev/config.json` (script sets `"mode": "tcp_only"` to avoid UDP handshake issues)
 
 **SSH Mode (Option 2)**
 - Tunnels DNS traffic to your SSH service
@@ -278,6 +339,23 @@ sudo iptables -t nat -L PREROUTING -n -v     # Check iptables rules
 ```bash
 curl --socks5 127.0.0.1:1080 http://httpbin.org/ip  # Test SOCKS proxy locally
 sudo cat /etc/danted.conf                           # Check Dante configuration
+```
+
+**Shadowsocks / No logs / UDP errors**:
+
+- If `ss-server` shows "suspicious UDP packet" errors or you see no Shadowsocks logs, ensure the client traffic is properly routed through the slipstream tunnel (see the Shadowsocks Mode example above). The deploy script configures Shadowsocks to use TCP-only mode by default (`"mode": "tcp_only"`) because the DNS tunnel in this setup carries TCP traffic to the server-side `ss-server`.
+- Confirm `ss-server` is running and listening on `127.0.0.1:<port>` on the server:
+
+```bash
+ss -tlnp | grep ss-server
+journalctl -u shadowsocks-libev-server@config -f
+```
+
+If `ss-local` traffic isn't reaching `ss-server`, verify that `slipstream-server` is receiving and forwarding connections:
+
+```bash
+journalctl -u slipstream-rust-server -f
+systemctl status slipstream-rust-server
 ```
 
 **Port Check**:

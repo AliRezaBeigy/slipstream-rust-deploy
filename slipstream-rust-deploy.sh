@@ -1492,7 +1492,7 @@ setup_shadowsocks() {
     "timeout": 300,
     "method": "${SHADOWSOCKS_METHOD}",
     "fast_open": false,
-    "mode": "tcp_and_udp"
+    "mode": "tcp_only"
 }
 EOF
 
