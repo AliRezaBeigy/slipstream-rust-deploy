@@ -343,7 +343,7 @@ detect_active_mode() {
     fi
     
     echo ""
-    return 1
+    return 0
 }
 
 # Function to load existing configuration
