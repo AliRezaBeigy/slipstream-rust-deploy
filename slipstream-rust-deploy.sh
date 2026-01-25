@@ -1469,26 +1469,56 @@ EOF
 setup_shadowsocks() {
     print_status "Setting up Shadowsocks..."
 
-    # Install shadowsocks-libev
-    case $PKG_MANAGER in
-        dnf|yum)
-            # Enable EPEL repository for shadowsocks-libev
-            $PKG_MANAGER install -y epel-release 2>/dev/null || true
-            if ! $PKG_MANAGER install -y shadowsocks-libev; then
-                print_warning "shadowsocks-libev not available in repos, trying snap..."
-                if ! command -v snap &> /dev/null; then
-                    $PKG_MANAGER install -y snapd
-                    systemctl enable --now snapd.socket
-                    ln -sf /var/lib/snapd/snap /snap 2>/dev/null || true
-                    sleep 5
+    local shadowsocks_installed=false
+
+    # First, try snap (recommended method)
+    if command -v snap &> /dev/null; then
+        print_status "Attempting to install shadowsocks-libev via snap..."
+        if snap install shadowsocks-libev 2>/dev/null; then
+            shadowsocks_installed=true
+            print_status "Successfully installed shadowsocks-libev via snap"
+        else
+            print_warning "Failed to install shadowsocks-libev via snap, trying package manager..."
+        fi
+    else
+        print_status "snap not available, trying package manager..."
+    fi
+
+    # If snap failed or not available, try package manager
+    if [ "$shadowsocks_installed" = false ]; then
+        case $PKG_MANAGER in
+            dnf|yum)
+                print_status "Attempting to install shadowsocks-libev via $PKG_MANAGER..."
+                # Enable EPEL repository for shadowsocks-libev
+                $PKG_MANAGER install -y epel-release 2>/dev/null || true
+                if $PKG_MANAGER install -y shadowsocks-libev; then
+                    shadowsocks_installed=true
+                    print_status "Successfully installed shadowsocks-libev via $PKG_MANAGER"
+                else
+                    print_error "Failed to install shadowsocks-libev via $PKG_MANAGER"
                 fi
-                snap install shadowsocks-libev
-            fi
-            ;;
-        apt)
-            apt install -y shadowsocks-libev
-            ;;
-    esac
+                ;;
+            apt)
+                print_status "Attempting to install shadowsocks-libev via apt..."
+                if apt update && apt install -y shadowsocks-libev; then
+                    shadowsocks_installed=true
+                    print_status "Successfully installed shadowsocks-libev via apt"
+                else
+                    print_error "Failed to install shadowsocks-libev via apt"
+                fi
+                ;;
+            *)
+                print_error "Unsupported package manager: $PKG_MANAGER"
+                ;;
+        esac
+    fi
+
+    # If installation failed, exit with error
+    if [ "$shadowsocks_installed" = false ]; then
+        print_error "Failed to install shadowsocks-libev via snap or package manager"
+        print_error "Please install shadowsocks-libev manually and try again"
+        exit 1
+    fi
 
     # Create Shadowsocks configuration directory
     mkdir -p /etc/shadowsocks-libev
@@ -1534,10 +1564,20 @@ EOF
     if systemctl list-unit-files | grep -q "shadowsocks-libev-server@.service"; then
         systemctl enable shadowsocks-libev-server@config
         systemctl restart shadowsocks-libev-server@config
+        if ! systemctl is-active --quiet shadowsocks-libev-server@config; then
+            print_error "Shadowsocks service failed to start"
+            print_status "Check logs with: journalctl -u shadowsocks-libev-server@config -n 50"
+            exit 1
+        fi
     elif systemctl list-unit-files | grep -q "shadowsocks-libev.service"; then
         # Some distros use a different service name
         systemctl enable shadowsocks-libev
         systemctl restart shadowsocks-libev
+        if ! systemctl is-active --quiet shadowsocks-libev; then
+            print_error "Shadowsocks service failed to start"
+            print_status "Check logs with: journalctl -u shadowsocks-libev -n 50"
+            exit 1
+        fi
     else
         print_error "Could not find Shadowsocks systemd service"
         exit 1
