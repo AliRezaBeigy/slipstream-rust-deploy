@@ -19,7 +19,7 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Global variables
-SCRIPT_URL="https://raw.githubusercontent.com/AliRezaBeigy/slipstream-rust-deploy/master/slipstream-rust-deploy.sh"
+SCRIPT_URL="https://raw.githubusercontent.com/its-pixelion/slipstream-rust-deploy/master/slipstream-rust-deploy.sh"
 INSTALL_DIR="/usr/local/bin"
 CONFIG_DIR="/etc/slipstream-rust"
 SYSTEMD_DIR="/etc/systemd/system"
@@ -29,7 +29,7 @@ SCRIPT_INSTALL_PATH="/usr/local/bin/slipstream-rust-deploy"
 BUILD_DIR="/opt/slipstream-rust"
 REPO_URL="https://github.com/Mygod/slipstream-rust.git"
 SLIPSTREAM_PORT="5300"
-RELEASE_URL="https://github.com/AliRezaBeigy/slipstream-rust-deploy/releases/latest/download"
+RELEASE_URL="https://github.com/its-pixelion/slipstream-rust-deploy/releases/latest/download"
 
 # Global variable to track if update is available
 UPDATE_AVAILABLE=false
@@ -185,6 +185,21 @@ uninstall_slipstream() {
     if systemctl is-enabled --quiet danted 2>/dev/null; then
         print_status "Disabling Dante SOCKS service..."
         systemctl disable danted
+    fi
+
+    # Stop and disable Shadowsocks if running
+    if systemctl is-active --quiet shadowsocks-libev-server@config 2>/dev/null; then
+        print_status "Stopping Shadowsocks service..."
+        systemctl stop shadowsocks-libev-server@config
+    fi
+    if systemctl is-enabled --quiet shadowsocks-libev-server@config 2>/dev/null; then
+        print_status "Disabling Shadowsocks service..."
+        systemctl disable shadowsocks-libev-server@config
+    fi
+    # Remove Shadowsocks config if exists
+    if [ -f /etc/shadowsocks-libev/config.json ]; then
+        print_status "Removing Shadowsocks configuration..."
+        rm -f /etc/shadowsocks-libev/config.json
     fi
 
     # Remove slipstream-server binary
@@ -349,6 +364,14 @@ SOCKS_PASSWORD="${SOCKS_PASSWORD:-}"
 EOF
     fi
 
+    if [ "$TUNNEL_MODE" = "shadowsocks" ]; then
+        cat >> "$CONFIG_FILE" << EOF
+SHADOWSOCKS_PORT="${SHADOWSOCKS_PORT:-8388}"
+SHADOWSOCKS_PASSWORD="${SHADOWSOCKS_PASSWORD:-}"
+SHADOWSOCKS_METHOD="${SHADOWSOCKS_METHOD:-aes-256-gcm}"
+EOF
+    fi
+
     chmod 640 "$CONFIG_FILE"
     chown root:"$SLIPSTREAM_USER" "$CONFIG_FILE"
     print_status "Configuration saved to $CONFIG_FILE"
@@ -410,6 +433,19 @@ show_configuration_info() {
         echo -e "  Stop:    ${YELLOW}systemctl stop danted${NC}"
         echo -e "  Start:   ${YELLOW}systemctl start danted${NC}"
         echo -e "  Logs:    ${YELLOW}journalctl -u danted -f${NC}"
+    fi
+
+    # Show Shadowsocks info if applicable
+    if [ "$TUNNEL_MODE" = "shadowsocks" ]; then
+        echo ""
+        echo -e "${BLUE}Shadowsocks Information:${NC}"
+        echo -e "Shadowsocks server is running on ${YELLOW}127.0.0.1:${SHADOWSOCKS_PORT:-8388}${NC}"
+        echo -e "Encryption method: ${YELLOW}${SHADOWSOCKS_METHOD:-aes-256-gcm}${NC}"
+        echo -e "${BLUE}Shadowsocks service commands:${NC}"
+        echo -e "  Status:  ${YELLOW}systemctl status shadowsocks-libev-server@config${NC}"
+        echo -e "  Stop:    ${YELLOW}systemctl stop shadowsocks-libev-server@config${NC}"
+        echo -e "  Start:   ${YELLOW}systemctl start shadowsocks-libev-server@config${NC}"
+        echo -e "  Logs:    ${YELLOW}journalctl -u shadowsocks-libev-server@config -f${NC}"
     fi
 
     echo ""
@@ -640,18 +676,20 @@ get_user_input() {
     # Get tunnel mode
     while true; do
         echo "Select tunnel mode:"
-        echo "1) SOCKS proxy"
+        echo "1) SOCKS proxy (Dante)"
         echo "2) SSH mode"
+        echo "3) Shadowsocks"
         if [[ -n "$existing_mode" ]]; then
             local mode_number
-            if [[ "$existing_mode" == "socks" ]]; then
-                mode_number="1"
-            else
-                mode_number="2"
-            fi
+            case "$existing_mode" in
+                socks) mode_number="1" ;;
+                ssh) mode_number="2" ;;
+                shadowsocks) mode_number="3" ;;
+                *) mode_number="?" ;;
+            esac
             print_question "Enter choice (current: $mode_number - $existing_mode): "
         else
-            print_question "Enter choice (1 or 2): "
+            print_question "Enter choice (1, 2, or 3): "
         fi
         read -r TUNNEL_MODE
 
@@ -670,8 +708,12 @@ get_user_input() {
                 TUNNEL_MODE="ssh"
                 break
                 ;;
+            3)
+                TUNNEL_MODE="shadowsocks"
+                break
+                ;;
             *)
-                print_error "Invalid choice. Please enter 1 or 2"
+                print_error "Invalid choice. Please enter 1, 2, or 3"
                 ;;
         esac
     done
@@ -764,6 +806,100 @@ get_user_input() {
         done
     fi
 
+    # Shadowsocks configuration
+    SHADOWSOCKS_PORT="8388"
+    SHADOWSOCKS_PASSWORD=""
+    SHADOWSOCKS_METHOD="aes-256-gcm"
+
+    if [ "$TUNNEL_MODE" = "shadowsocks" ]; then
+        if load_existing_config; then
+            if [[ -n "${SHADOWSOCKS_PORT:-}" ]]; then
+                local existing_ss_port="$SHADOWSOCKS_PORT"
+                local existing_ss_method="${SHADOWSOCKS_METHOD:-aes-256-gcm}"
+            fi
+        fi
+
+        # Get Shadowsocks port
+        while true; do
+            if [[ -n "${existing_ss_port:-}" ]]; then
+                print_question "Enter Shadowsocks local port (current: $existing_ss_port): "
+            else
+                print_question "Enter Shadowsocks local port (default: 8388): "
+            fi
+            read -r input_port
+
+            if [[ -z "$input_port" ]]; then
+                if [[ -n "${existing_ss_port:-}" ]]; then
+                    SHADOWSOCKS_PORT="$existing_ss_port"
+                else
+                    SHADOWSOCKS_PORT="8388"
+                fi
+                break
+            elif [[ "$input_port" =~ ^[0-9]+$ ]] && [ "$input_port" -ge 1 ] && [ "$input_port" -le 65535 ]; then
+                SHADOWSOCKS_PORT="$input_port"
+                break
+            else
+                print_error "Please enter a valid port number (1-65535)"
+            fi
+        done
+
+        # Get Shadowsocks password
+        while true; do
+            print_question "Enter Shadowsocks password: "
+            read -rs SHADOWSOCKS_PASSWORD
+            echo ""
+
+            if [[ -z "$SHADOWSOCKS_PASSWORD" ]]; then
+                print_error "Please enter a valid password"
+            else
+                print_question "Confirm Shadowsocks password: "
+                read -rs SHADOWSOCKS_PASSWORD_CONFIRM
+                echo ""
+
+                if [[ "$SHADOWSOCKS_PASSWORD" != "$SHADOWSOCKS_PASSWORD_CONFIRM" ]]; then
+                    print_error "Passwords do not match. Please try again."
+                    SHADOWSOCKS_PASSWORD=""
+                else
+                    break
+                fi
+            fi
+        done
+
+        # Get encryption method
+        echo "Select encryption method:"
+        echo "1) aes-256-gcm (recommended)"
+        echo "2) aes-128-gcm"
+        echo "3) chacha20-ietf-poly1305"
+        echo "4) aes-256-cfb"
+        echo "5) aes-128-cfb"
+        while true; do
+            if [[ -n "${existing_ss_method:-}" ]]; then
+                print_question "Enter choice (current: $existing_ss_method): "
+            else
+                print_question "Enter choice (default: 1): "
+            fi
+            read -r method_choice
+
+            if [[ -z "$method_choice" ]]; then
+                if [[ -n "${existing_ss_method:-}" ]]; then
+                    SHADOWSOCKS_METHOD="$existing_ss_method"
+                else
+                    SHADOWSOCKS_METHOD="aes-256-gcm"
+                fi
+                break
+            fi
+
+            case $method_choice in
+                1) SHADOWSOCKS_METHOD="aes-256-gcm"; break ;;
+                2) SHADOWSOCKS_METHOD="aes-128-gcm"; break ;;
+                3) SHADOWSOCKS_METHOD="chacha20-ietf-poly1305"; break ;;
+                4) SHADOWSOCKS_METHOD="aes-256-cfb"; break ;;
+                5) SHADOWSOCKS_METHOD="aes-128-cfb"; break ;;
+                *) print_error "Invalid choice. Please enter 1-5" ;;
+            esac
+        done
+    fi
+
     print_status "Configuration:"
     print_status "  Domain: $DOMAIN"
     print_status "  Tunnel mode: $TUNNEL_MODE"
@@ -773,6 +909,10 @@ get_user_input() {
         else
             print_status "  SOCKS authentication: disabled"
         fi
+    fi
+    if [ "$TUNNEL_MODE" = "shadowsocks" ]; then
+        print_status "  Shadowsocks port: $SHADOWSOCKS_PORT"
+        print_status "  Shadowsocks method: $SHADOWSOCKS_METHOD"
     fi
 }
 
@@ -829,13 +969,13 @@ download_prebuilt_binary() {
 
     print_status "Fetching latest release information..."
     local api_response
-    api_response=$(curl -fsSL "https://api.github.com/repos/AliRezaBeigy/slipstream-rust-deploy/releases/latest" 2>/dev/null)
+    api_response=$(curl -fsSL "https://api.github.com/repos/its-pixelion/slipstream-rust-deploy/releases/latest" 2>/dev/null)
     
     if [ -n "$api_response" ]; then
         latest_tag=$(echo "$api_response" | grep -o '"tag_name": "[^"]*"' | cut -d'"' -f4)
         if [ -n "$latest_tag" ]; then
             print_status "Found latest release tag: $latest_tag"
-            download_url="https://github.com/AliRezaBeigy/slipstream-rust-deploy/releases/download/${latest_tag}/${binary_name}"
+            download_url="https://github.com/its-pixelion/slipstream-rust-deploy/releases/download/${latest_tag}/${binary_name}"
         fi
     fi
 
@@ -1315,6 +1455,86 @@ EOF
     fi
 }
 
+# Function to install and configure Shadowsocks
+setup_shadowsocks() {
+    print_status "Setting up Shadowsocks..."
+
+    # Install shadowsocks-libev
+    case $PKG_MANAGER in
+        dnf|yum)
+            # Enable EPEL repository for shadowsocks-libev
+            $PKG_MANAGER install -y epel-release 2>/dev/null || true
+            if ! $PKG_MANAGER install -y shadowsocks-libev; then
+                print_warning "shadowsocks-libev not available in repos, trying snap..."
+                if ! command -v snap &> /dev/null; then
+                    $PKG_MANAGER install -y snapd
+                    systemctl enable --now snapd.socket
+                    ln -sf /var/lib/snapd/snap /snap 2>/dev/null || true
+                    sleep 5
+                fi
+                snap install shadowsocks-libev
+            fi
+            ;;
+        apt)
+            apt install -y shadowsocks-libev
+            ;;
+    esac
+
+    # Create Shadowsocks configuration directory
+    mkdir -p /etc/shadowsocks-libev
+
+    # Create Shadowsocks configuration file
+    cat > /etc/shadowsocks-libev/config.json << EOF
+{
+    "server": "127.0.0.1",
+    "server_port": ${SHADOWSOCKS_PORT},
+    "password": "${SHADOWSOCKS_PASSWORD}",
+    "timeout": 300,
+    "method": "${SHADOWSOCKS_METHOD}",
+    "fast_open": false,
+    "mode": "tcp_and_udp"
+}
+EOF
+
+    chmod 640 /etc/shadowsocks-libev/config.json
+
+    # Create systemd service override if needed (for snap installations)
+    if command -v snap &> /dev/null && snap list shadowsocks-libev &>/dev/null; then
+        # For snap installation, create a wrapper service
+        cat > /etc/systemd/system/shadowsocks-libev-server@config.service << EOF
+[Unit]
+Description=Shadowsocks-libev Server Service for %i
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/snap/bin/ss-server -c /etc/shadowsocks-libev/%i.json
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+        systemctl daemon-reload
+    fi
+
+    # Enable and start Shadowsocks service
+    if systemctl list-unit-files | grep -q "shadowsocks-libev-server@.service"; then
+        systemctl enable shadowsocks-libev-server@config
+        systemctl restart shadowsocks-libev-server@config
+    elif systemctl list-unit-files | grep -q "shadowsocks-libev.service"; then
+        # Some distros use a different service name
+        systemctl enable shadowsocks-libev
+        systemctl restart shadowsocks-libev
+    else
+        print_error "Could not find Shadowsocks systemd service"
+        exit 1
+    fi
+
+    print_status "Shadowsocks configured and started on port $SHADOWSOCKS_PORT"
+    print_status "Encryption method: $SHADOWSOCKS_METHOD"
+}
+
 # Function to create systemd service
 create_systemd_service() {
     print_status "Creating systemd service..."
@@ -1323,12 +1543,19 @@ create_systemd_service() {
     local service_file="${SYSTEMD_DIR}/${service_name}.service"
     local target_port
 
-    if [ "$TUNNEL_MODE" = "ssh" ]; then
-        target_port=$(detect_ssh_port)
-        print_status "Detected SSH port: $target_port"
-    else
-        target_port="1080"  # Dante SOCKS port
-    fi
+    case "$TUNNEL_MODE" in
+        ssh)
+            target_port=$(detect_ssh_port)
+            print_status "Detected SSH port: $target_port"
+            ;;
+        shadowsocks)
+            target_port="${SHADOWSOCKS_PORT:-8388}"
+            print_status "Using Shadowsocks port: $target_port"
+            ;;
+        socks|*)
+            target_port="1080"  # Dante SOCKS port
+            ;;
+    esac
 
     # Stop service if it's running to allow reconfiguration
     if systemctl is-active --quiet "$service_name"; then
@@ -1446,6 +1673,19 @@ print_success_box() {
         echo -e "  ${text_color}Logs:    journalctl -u danted -f${reset}"
     fi
 
+    # Shadowsocks info if applicable
+    if [ "$TUNNEL_MODE" = "shadowsocks" ]; then
+        echo ""
+        echo -e "${header_color}Shadowsocks Information:${reset}"
+        echo -e "${text_color}Shadowsocks server is running on 127.0.0.1:${SHADOWSOCKS_PORT:-8388}${reset}"
+        echo -e "${text_color}Encryption method: ${key_color}${SHADOWSOCKS_METHOD:-aes-256-gcm}${reset}"
+        echo -e "${text_color}Shadowsocks service commands:${reset}"
+        echo -e "  ${text_color}Status:  systemctl status shadowsocks-libev-server@config${reset}"
+        echo -e "  ${text_color}Stop:    systemctl stop shadowsocks-libev-server@config${reset}"
+        echo -e "  ${text_color}Start:   systemctl start shadowsocks-libev-server@config${reset}"
+        echo -e "  ${text_color}Logs:    journalctl -u shadowsocks-libev-server@config -f${reset}"
+    fi
+
     # Bottom border
     echo ""
     echo -e "${border_color}+================================================================================${reset}"
@@ -1505,7 +1745,7 @@ detect_dnstt() {
         print_warning "Both services use port 5300 and will conflict."
         echo ""
         print_status "To uninstall dnstt, run the following command:"
-        echo -e "${GREEN}  bash <(curl -Ls https://raw.githubusercontent.com/AliRezaBeigy/dnstt-deploy/main/dnstt-deploy.sh) uninstall${NC}"
+        echo -e "${GREEN}  bash <(curl -Ls https://raw.githubusercontent.com/its-pixelion/dnstt-deploy/main/dnstt-deploy.sh) uninstall${NC}"
         echo ""
         print_question "Press Enter after uninstalling dnstt to continue, or Ctrl+C to exit: "
         read -r
@@ -1575,16 +1815,39 @@ main() {
     configure_firewall
 
     # Setup tunnel mode specific configurations
-    if [ "$TUNNEL_MODE" = "socks" ]; then
-        setup_dante
-    else
-        # If switching from SOCKS to SSH, stop and disable Dante
-        if systemctl is-active --quiet danted; then
-            print_status "Switching from SOCKS to SSH mode - stopping Dante service..."
-            systemctl stop danted
-            systemctl disable danted
-        fi
-    fi
+    case "$TUNNEL_MODE" in
+        socks)
+            setup_dante
+            # Stop Shadowsocks if it was running
+            if systemctl is-active --quiet shadowsocks-libev-server@config 2>/dev/null; then
+                print_status "Switching to SOCKS mode - stopping Shadowsocks service..."
+                systemctl stop shadowsocks-libev-server@config
+                systemctl disable shadowsocks-libev-server@config
+            fi
+            ;;
+        shadowsocks)
+            setup_shadowsocks
+            # Stop Dante if it was running
+            if systemctl is-active --quiet danted 2>/dev/null; then
+                print_status "Switching to Shadowsocks mode - stopping Dante service..."
+                systemctl stop danted
+                systemctl disable danted
+            fi
+            ;;
+        ssh|*)
+            # If switching from SOCKS or Shadowsocks to SSH, stop those services
+            if systemctl is-active --quiet danted 2>/dev/null; then
+                print_status "Switching to SSH mode - stopping Dante service..."
+                systemctl stop danted
+                systemctl disable danted
+            fi
+            if systemctl is-active --quiet shadowsocks-libev-server@config 2>/dev/null; then
+                print_status "Switching to SSH mode - stopping Shadowsocks service..."
+                systemctl stop shadowsocks-libev-server@config
+                systemctl disable shadowsocks-libev-server@config
+            fi
+            ;;
+    esac
 
     # Create systemd service
     create_systemd_service
