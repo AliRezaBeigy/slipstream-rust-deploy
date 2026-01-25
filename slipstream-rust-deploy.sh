@@ -1346,6 +1346,18 @@ create_systemd_service() {
         systemctl stop "$service_name"
     fi
 
+    local dns_listen_host="0.0.0.0"
+    if command -v ip6tables &> /dev/null && [ -f /proc/net/if_inet6 ]; then
+        if ip -6 addr show | grep -q "inet6"; then
+            dns_listen_host="::"
+            print_status "IPv6 detected, using :: for dual-stack support"
+        else
+            print_status "IPv6 not configured, using 0.0.0.0 for IPv4 only"
+        fi
+    else
+        print_status "IPv6 not available, using 0.0.0.0 for IPv4 only"
+    fi
+
     # Create systemd service file
     cat > "$service_file" << EOF
 [Unit]
@@ -1357,7 +1369,7 @@ Wants=network.target
 Type=simple
 User=$SLIPSTREAM_USER
 Group=$SLIPSTREAM_USER
-ExecStart=${INSTALL_DIR}/slipstream-server --dns-listen-port ${SLIPSTREAM_PORT} --target-address 127.0.0.1:${target_port} --domain ${DOMAIN} --cert ${CERT_FILE} --key ${KEY_FILE}
+ExecStart=${INSTALL_DIR}/slipstream-server --dns-listen-host ${dns_listen_host} --dns-listen-port ${SLIPSTREAM_PORT} --target-address 127.0.0.1:${target_port} --domain ${DOMAIN} --cert ${CERT_FILE} --key ${KEY_FILE}
 Restart=always
 RestartSec=5
 KillMode=mixed
