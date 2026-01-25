@@ -516,6 +516,11 @@ install_dependencies() {
             # For RHEL-based systems
             local packages_to_install=()
 
+            # Always install gcc-c++ for building picoquic (CMake requires C++ compiler)
+            if ! command -v g++ &> /dev/null; then
+                packages_to_install+=("gcc-c++")
+            fi
+
             for tool in "${tools[@]}"; do
                 case $tool in
                     "rustc"|"cargo")
@@ -559,6 +564,11 @@ install_dependencies() {
             fi
 
             local packages_to_install=()
+
+            # Always install g++ for building picoquic (CMake requires C++ compiler)
+            if ! command -v g++ &> /dev/null; then
+                packages_to_install+=("g++")
+            fi
 
             for tool in "${tools[@]}"; do
                 case $tool in
