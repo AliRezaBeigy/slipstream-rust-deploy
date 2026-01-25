@@ -330,6 +330,22 @@ handle_menu() {
     done
 }
 
+detect_active_mode() {
+    if systemctl is-active --quiet shadowsocks-libev-server@config 2>/dev/null || \
+       systemctl is-active --quiet shadowsocks-libev 2>/dev/null; then
+        echo "shadowsocks"
+        return 0
+    fi
+    
+    if systemctl is-active --quiet danted 2>/dev/null; then
+        echo "socks"
+        return 0
+    fi
+    
+    echo ""
+    return 1
+}
+
 # Function to load existing configuration
 load_existing_config() {
     if [ -f "$CONFIG_FILE" ]; then
@@ -660,6 +676,13 @@ get_user_input() {
         existing_domain="$DOMAIN"
         existing_mode="$TUNNEL_MODE"
         print_status "Found existing configuration for domain: $existing_domain"
+    fi
+    
+    local active_mode
+    active_mode=$(detect_active_mode)
+    if [[ -n "$active_mode" ]]; then
+        existing_mode="$active_mode"
+        print_status "Detected active tunnel mode: $active_mode"
     fi
 
     # Get domain
