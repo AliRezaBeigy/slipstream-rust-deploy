@@ -462,70 +462,33 @@ jobs:
           # Upstream slipstream-ffi build helper only respects CC/AR (host),
           # which breaks cross-compiling C wrapper objects for x86_64 from arm64 runners.
           # Patch it to honor CC_x86_64_apple_darwin / AR_x86_64_apple_darwin.
-          python3 - <<'PY'
-          from pathlib import Path
-          p = Path("crates/slipstream-ffi/build/cc.rs")
-          if not p.exists():
-              raise SystemExit(f"Missing file: {p}")
-          s = p.read_text()
-          if "CC_\" + target_key" in s or "CC_{target_key}" in s:
-              print("cc.rs already patched; skipping")
-              raise SystemExit(0)
-          old = """pub(crate) fn resolve_cc(target: &str) -> String {
-              if target.contains("android") {
-                  env::var("RUST_ANDROID_GRADLE_CC")
-                      .or_else(|_| env::var("CC"))
-                      .unwrap_or_else(|_| "cc".to_string())
-              } else {
-                  env::var("CC").unwrap_or_else(|_| "cc".to_string())
-              }
-          }"""
-          new = """pub(crate) fn resolve_cc(target: &str) -> String {
-              let target_key = target.replace('-', "_");
-              let cc_target_key = format!("CC_{}", target_key);
-              if let Ok(cc) = env::var(&cc_target_key) {
-                  return cc;
-              }
-              if target.contains("android") {
-                  env::var("RUST_ANDROID_GRADLE_CC")
-                      .or_else(|_| env::var("CC"))
-                      .unwrap_or_else(|_| "cc".to_string())
-              } else {
-                  env::var("CC").unwrap_or_else(|_| "cc".to_string())
-              }
-          }"""
-          if old not in s:
-              raise SystemExit("Expected resolve_cc() block not found; upstream changed?")
-          s = s.replace(old, new)
-          old = """pub(crate) fn resolve_ar(target: &str, cc: &str) -> String {
-              if target.contains("android") {
-                  if let Ok(ar) = env::var("RUST_ANDROID_GRADLE_AR") {
-                      return ar;
-                  }
-              }
-              if let Ok(ar) = env::var("AR") {
-                  return ar;
-              }"""
-          new = """pub(crate) fn resolve_ar(target: &str, cc: &str) -> String {
-              let target_key = target.replace('-', "_");
-              let ar_target_key = format!("AR_{}", target_key);
-              if let Ok(ar) = env::var(&ar_target_key) {
-                  return ar;
-              }
-              if target.contains("android") {
-                  if let Ok(ar) = env::var("RUST_ANDROID_GRADLE_AR") {
-                      return ar;
-                  }
-              }
-              if let Ok(ar) = env::var("AR") {
-                  return ar;
-              }"""
-          if old not in s:
-              raise SystemExit("Expected resolve_ar() prelude not found; upstream changed?")
-          s = s.replace(old, new)
-          p.write_text(s)
-          print("Patched crates/slipstream-ffi/build/cc.rs for CC_<target>/AR_<target>")
-          PY
+          CC_RS="crates/slipstream-ffi/build/cc.rs"
+          if [ ! -f "$CC_RS" ]; then
+            echo "Error: Missing file: $CC_RS"
+            exit 1
+          fi
+          
+          # Check if already patched
+          if grep -q "CC_\"" "$CC_RS" || grep -q "CC_{target_key}" "$CC_RS"; then
+            echo "cc.rs already patched; skipping"
+            exit 0
+          fi
+          
+          # Patch resolve_cc function: insert target-specific check at the beginning
+          perl -i -pe '
+            if (/^pub\(crate\) fn resolve_cc\(target: &str\) -> String \{$/) {
+                $_ .= "\n    let target_key = target.replace('\''-'\'', \"_\");\n    let cc_target_key = format!(\"CC_{}\", target_key);\n    if let Ok(cc) = env::var(&cc_target_key) {\n        return cc;\n    }";
+            }
+          ' "$CC_RS"
+          
+          # Patch resolve_ar function: insert target-specific check at the beginning
+          perl -i -pe '
+            if (/^pub\(crate\) fn resolve_ar\(target: &str, cc: &str\) -> String \{$/) {
+                $_ .= "\n    let target_key = target.replace('\''-'\'', \"_\");\n    let ar_target_key = format!(\"AR_{}\", target_key);\n    if let Ok(ar) = env::var(&ar_target_key) {\n        return ar;\n    }";
+            }
+          ' "$CC_RS"
+          
+          echo "Patched crates/slipstream-ffi/build/cc.rs for CC_<target>/AR_<target>"
 
       - name: Patch macOS sockaddr compatibility
         if: runner.os == 'macOS'
