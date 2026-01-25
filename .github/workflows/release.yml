@@ -592,11 +592,23 @@ jobs:
 
           # For macOS Intel cross-compilation from ARM64 runner
           if [[ "${{ matrix.target }}" == "x86_64-apple-darwin" ]]; then
-            # Set target-specific C/C++ compiler flags for cc crate
-            export CC_x86_64_apple_darwin=clang
-            export CXX_x86_64_apple_darwin=clang++
-            export CFLAGS_x86_64_apple_darwin="-arch x86_64"
-            export CXXFLAGS_x86_64_apple_darwin="-arch x86_64"
+            # Create wrapper scripts for cross-compilation
+            mkdir -p /tmp/cross-bin
+            echo '#!/bin/bash' > /tmp/cross-bin/cc
+            echo 'exec clang -arch x86_64 "$@"' >> /tmp/cross-bin/cc
+            chmod +x /tmp/cross-bin/cc
+            echo '#!/bin/bash' > /tmp/cross-bin/c++
+            echo 'exec clang++ -arch x86_64 "$@"' >> /tmp/cross-bin/c++
+            chmod +x /tmp/cross-bin/c++
+
+            # Set compiler environment variables to use wrappers
+            export PATH="/tmp/cross-bin:$PATH"
+            export CC=/tmp/cross-bin/cc
+            export CXX=/tmp/cross-bin/c++
+
+            # Also set target-specific for cc crate
+            export CC_x86_64_apple_darwin=/tmp/cross-bin/cc
+            export CXX_x86_64_apple_darwin=/tmp/cross-bin/c++
 
             # Use x86_64 OpenSSL from Intel Homebrew prefix
             export OPENSSL_LIB_DIR=/usr/local/opt/openssl@3/lib
