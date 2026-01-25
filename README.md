@@ -179,16 +179,16 @@ Notes:
 - Listens on `127.0.0.1:1080`
 - Provides full internet proxy capabilities
 
-**Shadowsocks Mode (Option 3)**
-- Sets up a local `shadowsocks-libev` server bound to `127.0.0.1` (default port 8388)
-- Slipstream tunnels DNS traffic to the Shadowsocks server so clients can run `ss-local` locally and send encrypted traffic through the tunnel
-- Server config path: `/etc/shadowsocks-libev/config.json` (script sets `"mode": "tcp_only"` to avoid UDP handshake issues)
-
 **SSH Mode (Option 2)**
 - Tunnels DNS traffic to your SSH service
 - Automatically detects SSH port (default: 22)
 - Perfect for secure shell access via DNS
 - Compatible with mobile apps
+
+**Shadowsocks Mode (Option 3)**
+- Sets up a local `shadowsocks-libev` server bound to `127.0.0.1` (default port 8388)
+- Slipstream tunnels DNS traffic to the Shadowsocks server so clients can run `ss-local` locally and send encrypted traffic through the tunnel
+- Server config path: `/etc/shadowsocks-libev/config.json` (script sets `"mode": "tcp_only"` to avoid UDP handshake issues)
 
 ### Changing Settings
 To change settings:
