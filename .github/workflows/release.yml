@@ -293,14 +293,15 @@ jobs:
 
           if [[ "${{ matrix.target }}" == "x86_64-apple-darwin" ]]; then
             CMAKE_ARGS+=(-DCMAKE_OSX_ARCHITECTURES=x86_64)
+            CMAKE_ARGS+=(-DCMAKE_OSX_DEPLOYMENT_TARGET=10.12)
             # Use x86_64 OpenSSL for cross-compilation
             CMAKE_ARGS+=(-DOPENSSL_ROOT_DIR=/usr/local/opt/openssl@3)
             CMAKE_ARGS+=(-DOPENSSL_INCLUDE_DIR=/usr/local/opt/openssl@3/include)
             CMAKE_ARGS+=(-DOPENSSL_CRYPTO_LIBRARY=/usr/local/opt/openssl@3/lib/libcrypto.dylib)
             CMAKE_ARGS+=(-DOPENSSL_SSL_LIBRARY=/usr/local/opt/openssl@3/lib/libssl.dylib)
             # Set C compiler flags to target x86_64
-            CMAKE_ARGS+=(-DCMAKE_C_FLAGS="-arch x86_64")
-            CMAKE_ARGS+=(-DCMAKE_CXX_FLAGS="-arch x86_64")
+            CMAKE_ARGS+=(-DCMAKE_C_FLAGS="-arch x86_64 -mmacosx-version-min=10.12")
+            CMAKE_ARGS+=(-DCMAKE_CXX_FLAGS="-arch x86_64 -mmacosx-version-min=10.12")
           fi
 
           # Initial configure to fetch picotls
@@ -453,6 +454,79 @@ jobs:
           echo "PICOQUIC_FETCH_PTLS=ON" >> $GITHUB_ENV
           echo "PICOQUIC_AUTO_BUILD=1" >> $GITHUB_ENV
 
+      - name: Patch slipstream-ffi cross compiler env handling (macOS x86_64)
+        if: runner.os == 'macOS' && matrix.target == 'x86_64-apple-darwin'
+        working-directory: slipstream-rust
+        shell: bash
+        run: |
+          # Upstream slipstream-ffi build helper only respects CC/AR (host),
+          # which breaks cross-compiling C wrapper objects for x86_64 from arm64 runners.
+          # Patch it to honor CC_x86_64_apple_darwin / AR_x86_64_apple_darwin.
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("crates/slipstream-ffi/build/cc.rs")
+          if not p.exists():
+              raise SystemExit(f"Missing file: {p}")
+          s = p.read_text()
+          if "CC_\" + target_key" in s or "CC_{target_key}" in s:
+              print("cc.rs already patched; skipping")
+              raise SystemExit(0)
+          old = """pub(crate) fn resolve_cc(target: &str) -> String {
+              if target.contains("android") {
+                  env::var("RUST_ANDROID_GRADLE_CC")
+                      .or_else(|_| env::var("CC"))
+                      .unwrap_or_else(|_| "cc".to_string())
+              } else {
+                  env::var("CC").unwrap_or_else(|_| "cc".to_string())
+              }
+          }"""
+          new = """pub(crate) fn resolve_cc(target: &str) -> String {
+              let target_key = target.replace('-', "_");
+              let cc_target_key = format!("CC_{}", target_key);
+              if let Ok(cc) = env::var(&cc_target_key) {
+                  return cc;
+              }
+              if target.contains("android") {
+                  env::var("RUST_ANDROID_GRADLE_CC")
+                      .or_else(|_| env::var("CC"))
+                      .unwrap_or_else(|_| "cc".to_string())
+              } else {
+                  env::var("CC").unwrap_or_else(|_| "cc".to_string())
+              }
+          }"""
+          if old not in s:
+              raise SystemExit("Expected resolve_cc() block not found; upstream changed?")
+          s = s.replace(old, new)
+          old = """pub(crate) fn resolve_ar(target: &str, cc: &str) -> String {
+              if target.contains("android") {
+                  if let Ok(ar) = env::var("RUST_ANDROID_GRADLE_AR") {
+                      return ar;
+                  }
+              }
+              if let Ok(ar) = env::var("AR") {
+                  return ar;
+              }"""
+          new = """pub(crate) fn resolve_ar(target: &str, cc: &str) -> String {
+              let target_key = target.replace('-', "_");
+              let ar_target_key = format!("AR_{}", target_key);
+              if let Ok(ar) = env::var(&ar_target_key) {
+                  return ar;
+              }
+              if target.contains("android") {
+                  if let Ok(ar) = env::var("RUST_ANDROID_GRADLE_AR") {
+                      return ar;
+                  }
+              }
+              if let Ok(ar) = env::var("AR") {
+                  return ar;
+              }"""
+          if old not in s:
+              raise SystemExit("Expected resolve_ar() prelude not found; upstream changed?")
+          s = s.replace(old, new)
+          p.write_text(s)
+          print("Patched crates/slipstream-ffi/build/cc.rs for CC_<target>/AR_<target>")
+          PY
+
       - name: Patch macOS sockaddr compatibility
         if: runner.os == 'macOS'
         working-directory: slipstream-rust
@@ -592,22 +666,23 @@ jobs:
 
           # For macOS Intel cross-compilation from ARM64 runner
           if [[ "${{ matrix.target }}" == "x86_64-apple-darwin" ]]; then
+            export MACOSX_DEPLOYMENT_TARGET=10.12
             # Create wrapper scripts for cross-compilation
             # These are ONLY used for target-specific compilation, not for build scripts
             mkdir -p /tmp/cross-bin
             echo '#!/bin/bash' > /tmp/cross-bin/x86_64-cc
-            echo 'exec clang -arch x86_64 "$@"' >> /tmp/cross-bin/x86_64-cc
+            echo 'exec clang -arch x86_64 -mmacosx-version-min=10.12 "$@"' >> /tmp/cross-bin/x86_64-cc
             chmod +x /tmp/cross-bin/x86_64-cc
             echo '#!/bin/bash' > /tmp/cross-bin/x86_64-c++
-            echo 'exec clang++ -arch x86_64 "$@"' >> /tmp/cross-bin/x86_64-c++
+            echo 'exec clang++ -arch x86_64 -mmacosx-version-min=10.12 "$@"' >> /tmp/cross-bin/x86_64-c++
             chmod +x /tmp/cross-bin/x86_64-c++
 
             # IMPORTANT: Only set TARGET-SPECIFIC env vars, not global CC/CXX
             # Global CC would break build script compilation (needs to run on host arm64)
             export CC_x86_64_apple_darwin=/tmp/cross-bin/x86_64-cc
             export CXX_x86_64_apple_darwin=/tmp/cross-bin/x86_64-c++
-            export CFLAGS_x86_64_apple_darwin="-arch x86_64"
-            export CXXFLAGS_x86_64_apple_darwin="-arch x86_64"
+            export CFLAGS_x86_64_apple_darwin="-arch x86_64 -mmacosx-version-min=10.12"
+            export CXXFLAGS_x86_64_apple_darwin="-arch x86_64 -mmacosx-version-min=10.12"
 
             # Use x86_64 OpenSSL from Intel Homebrew prefix
             export OPENSSL_LIB_DIR=/usr/local/opt/openssl@3/lib

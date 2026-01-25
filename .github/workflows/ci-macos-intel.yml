@@ -1,0 +1,242 @@
+name: CI - macOS Intel (x86_64)
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-macos-intel:
+    runs-on: macos-latest
+    env:
+      TARGET: x86_64-apple-darwin
+
+    steps:
+      - name: Checkout slipstream-rust-deploy repository (for patches)
+        uses: actions/checkout@v4
+        with:
+          path: .
+
+      - name: Checkout slipstream-rust repository
+        uses: actions/checkout@v4
+        with:
+          repository: Mygod/slipstream-rust
+          ref: main
+          submodules: recursive
+          path: slipstream-rust
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ env.TARGET }}
+
+      - name: Install cross toolchain (linker + libs)
+        uses: taiki-e/setup-cross-toolchain-action@v1
+        with:
+          target: ${{ env.TARGET }}
+
+      - name: Cache Rust dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            slipstream-rust/target/
+          key: ${{ runner.os }}-rust-${{ env.TARGET }}-${{ hashFiles('slipstream-rust/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-rust-${{ env.TARGET }}-
+            ${{ runner.os }}-rust-
+
+      - name: Install build dependencies (macOS)
+        run: |
+          brew install cmake pkg-config
+          # Install x86_64 Homebrew + OpenSSL for Intel cross-compilation
+          arch -x86_64 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" || true
+          arch -x86_64 /usr/local/bin/brew install openssl@3
+
+      - name: Setup OpenSSL (macOS x86_64)
+        run: |
+          echo "PKG_CONFIG_PATH=/usr/local/opt/openssl@3/lib/pkgconfig:$PKG_CONFIG_PATH" >> $GITHUB_ENV
+          echo "OPENSSL_DIR=/usr/local/opt/openssl@3" >> $GITHUB_ENV
+          echo "OPENSSL_ROOT_DIR=/usr/local/opt/openssl@3" >> $GITHUB_ENV
+
+      - name: Build picoquic (macOS x86_64)
+        working-directory: slipstream-rust
+        shell: bash
+        run: |
+          PICOQUIC_DIR="${GITHUB_WORKSPACE}/slipstream-rust/vendor/picoquic"
+          PICOQUIC_BUILD_DIR="${GITHUB_WORKSPACE}/slipstream-rust/.picoquic-build"
+
+          CMAKE_ARGS=(-S "$PICOQUIC_DIR" -B "$PICOQUIC_BUILD_DIR"
+            -DCMAKE_BUILD_TYPE=Release
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+            -DCMAKE_OSX_ARCHITECTURES=x86_64
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=10.12
+            -DPICOQUIC_FETCH_PTLS=ON
+            -DBUILD_TESTING=OFF
+            -Dpicoquic_BUILD_TESTS=OFF
+            -DOPENSSL_ROOT_DIR=/usr/local/opt/openssl@3
+            -DOPENSSL_INCLUDE_DIR=/usr/local/opt/openssl@3/include
+            -DOPENSSL_CRYPTO_LIBRARY=/usr/local/opt/openssl@3/lib/libcrypto.dylib
+            -DOPENSSL_SSL_LIBRARY=/usr/local/opt/openssl@3/lib/libssl.dylib
+            -DCMAKE_C_FLAGS="-arch x86_64 -mmacosx-version-min=10.12"
+            -DCMAKE_CXX_FLAGS="-arch x86_64 -mmacosx-version-min=10.12"
+            -Wno-dev)
+
+          # Initial configure to fetch picotls
+          cmake "${CMAKE_ARGS[@]}" || true
+
+          # Patch picotls CMake version requirement
+          PTLS_CMAKE="$PICOQUIC_BUILD_DIR/_deps/picotls-src/CMakeLists.txt"
+          if [ -f "$PTLS_CMAKE" ]; then
+            sed -i '' 's/CMAKE_MINIMUM_REQUIRED(VERSION [0-9.]*)/CMAKE_MINIMUM_REQUIRED(VERSION 3.15)/' "$PTLS_CMAKE" || true
+          fi
+
+          # Reconfigure and build required targets (x86_64 has fusion)
+          cmake "${CMAKE_ARGS[@]}"
+          cmake --build "$PICOQUIC_BUILD_DIR" --target picoquic-core picotls-core picotls-fusion picotls-minicrypto picotls-openssl
+
+          echo "PICOQUIC_DIR=$PICOQUIC_DIR" >> $GITHUB_ENV
+          echo "PICOQUIC_BUILD_DIR=$PICOQUIC_BUILD_DIR" >> $GITHUB_ENV
+
+      - name: Patch slipstream-ffi cross compiler env handling (macOS x86_64)
+        if: runner.os == 'macOS'
+        working-directory: slipstream-rust
+        shell: bash
+        run: |
+          # Upstream slipstream-ffi build helper only respects CC/AR (host),
+          # which breaks cross-compiling C wrapper objects for x86_64 from arm64 runners.
+          # Patch it to honor CC_x86_64_apple_darwin / AR_x86_64_apple_darwin.
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("crates/slipstream-ffi/build/cc.rs")
+          if not p.exists():
+              raise SystemExit(f"Missing file: {p}")
+          s = p.read_text()
+          if "CC_\" + target_key" in s or "CC_{target_key}" in s:
+              print("cc.rs already patched; skipping")
+              raise SystemExit(0)
+          old = """pub(crate) fn resolve_cc(target: &str) -> String {
+              if target.contains("android") {
+                  env::var("RUST_ANDROID_GRADLE_CC")
+                      .or_else(|_| env::var("CC"))
+                      .unwrap_or_else(|_| "cc".to_string())
+              } else {
+                  env::var("CC").unwrap_or_else(|_| "cc".to_string())
+              }
+          }"""
+          new = """pub(crate) fn resolve_cc(target: &str) -> String {
+              let target_key = target.replace('-', "_");
+              let cc_target_key = format!("CC_{}", target_key);
+              if let Ok(cc) = env::var(&cc_target_key) {
+                  return cc;
+              }
+              if target.contains("android") {
+                  env::var("RUST_ANDROID_GRADLE_CC")
+                      .or_else(|_| env::var("CC"))
+                      .unwrap_or_else(|_| "cc".to_string())
+              } else {
+                  env::var("CC").unwrap_or_else(|_| "cc".to_string())
+              }
+          }"""
+          if old not in s:
+              raise SystemExit("Expected resolve_cc() block not found; upstream changed?")
+          s = s.replace(old, new)
+          old = """pub(crate) fn resolve_ar(target: &str, cc: &str) -> String {
+              if target.contains("android") {
+                  if let Ok(ar) = env::var("RUST_ANDROID_GRADLE_AR") {
+                      return ar;
+                  }
+              }
+              if let Ok(ar) = env::var("AR") {
+                  return ar;
+              }"""
+          new = """pub(crate) fn resolve_ar(target: &str, cc: &str) -> String {
+              let target_key = target.replace('-', "_");
+              let ar_target_key = format!("AR_{}", target_key);
+              if let Ok(ar) = env::var(&ar_target_key) {
+                  return ar;
+              }
+              if target.contains("android") {
+                  if let Ok(ar) = env::var("RUST_ANDROID_GRADLE_AR") {
+                      return ar;
+                  }
+              }
+              if let Ok(ar) = env::var("AR") {
+                  return ar;
+              }"""
+          if old not in s:
+              raise SystemExit("Expected resolve_ar() prelude not found; upstream changed?")
+          s = s.replace(old, new)
+          p.write_text(s)
+          print("Patched crates/slipstream-ffi/build/cc.rs for CC_<target>/AR_<target>")
+          PY
+
+      - name: Patch macOS sockaddr compatibility
+        working-directory: slipstream-rust
+        shell: bash
+        run: |
+          # Patch runtime.rs
+          RUNTIME_RS="crates/slipstream-ffi/src/runtime.rs"
+          if [ -f "$RUNTIME_RS" ] && ! grep -q "sin_len:" "$RUNTIME_RS"; then
+            perl -i -pe 's/(let sockaddr = libc::sockaddr_in \{)/$1\n                sin_len: std::mem::size_of::<libc::sockaddr_in>() as u8,/' "$RUNTIME_RS"
+            perl -i -pe 's/(let sockaddr = libc::sockaddr_in6 \{)/$1\n                sin6_len: std::mem::size_of::<libc::sockaddr_in6>() as u8,/' "$RUNTIME_RS"
+          fi
+
+          # Patch server.rs
+          SERVER_RS="crates/slipstream-server/src/server.rs"
+          if [ -f "$SERVER_RS" ] && ! grep -q "sin6_len:" "$SERVER_RS"; then
+            perl -i -pe 's/(let sockaddr = libc::sockaddr_in \{)/$1\n                sin_len: std::mem::size_of::<libc::sockaddr_in>() as u8,/' "$SERVER_RS"
+            perl -i -pe 's/(let sockaddr = libc::sockaddr_in6 \{)/$1\n                sin6_len: std::mem::size_of::<libc::sockaddr_in6>() as u8,/' "$SERVER_RS"
+          fi
+
+          # Patch udp_fallback.rs
+          UDP_FALLBACK_RS="crates/slipstream-server/src/udp_fallback.rs"
+          if [ -f "$UDP_FALLBACK_RS" ] && ! grep -q "sin6_len:" "$UDP_FALLBACK_RS"; then
+            perl -i -pe 's/(let sockaddr = libc::sockaddr_in \{)/$1\n        sin_len: std::mem::size_of::<libc::sockaddr_in>() as u8,/' "$UDP_FALLBACK_RS"
+            perl -i -pe 's/(let sockaddr = libc::sockaddr_in6 \{)/$1\n        sin6_len: std::mem::size_of::<libc::sockaddr_in6>() as u8,/' "$UDP_FALLBACK_RS"
+          fi
+
+      - name: Build slipstream binaries (macOS x86_64)
+        working-directory: slipstream-rust
+        shell: bash
+        run: |
+          export MACOSX_DEPLOYMENT_TARGET=10.12
+
+          mkdir -p /tmp/cross-bin
+          echo '#!/bin/bash' > /tmp/cross-bin/x86_64-cc
+          echo 'exec clang -arch x86_64 -mmacosx-version-min=10.12 "$@"' >> /tmp/cross-bin/x86_64-cc
+          chmod +x /tmp/cross-bin/x86_64-cc
+          echo '#!/bin/bash' > /tmp/cross-bin/x86_64-c++
+          echo 'exec clang++ -arch x86_64 -mmacosx-version-min=10.12 "$@"' >> /tmp/cross-bin/x86_64-c++
+          chmod +x /tmp/cross-bin/x86_64-c++
+
+          # Only set TARGET-SPECIFIC env vars, not global CC/CXX
+          export CC_x86_64_apple_darwin=/tmp/cross-bin/x86_64-cc
+          export CXX_x86_64_apple_darwin=/tmp/cross-bin/x86_64-c++
+          export CFLAGS_x86_64_apple_darwin="-arch x86_64 -mmacosx-version-min=10.12"
+          export CXXFLAGS_x86_64_apple_darwin="-arch x86_64 -mmacosx-version-min=10.12"
+
+          # Use x86_64 OpenSSL from Intel Homebrew prefix
+          export OPENSSL_LIB_DIR=/usr/local/opt/openssl@3/lib
+          export OPENSSL_INCLUDE_DIR=/usr/local/opt/openssl@3/include
+
+          # Ensure link args include arch + openssl lib dir
+          export CARGO_TARGET_X86_64_APPLE_DARWIN_RUSTFLAGS="-C link-arg=-L/usr/local/opt/openssl@3/lib -C link-arg=-arch -C link-arg=x86_64"
+
+          cargo build --release --target ${{ env.TARGET }} -p slipstream-client -p slipstream-server
+        env:
+          PICOQUIC_FETCH_PTLS: ON
+          PICOQUIC_AUTO_BUILD: 1
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: slipstream-macos-intel
+          path: |
+            slipstream-rust/target/x86_64-apple-darwin/release/slipstream-client
+            slipstream-rust/target/x86_64-apple-darwin/release/slipstream-server
+          retention-days: 7
