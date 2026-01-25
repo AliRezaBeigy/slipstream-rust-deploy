@@ -21,6 +21,9 @@ jobs:
           - os: macos-latest
             target: aarch64-apple-darwin
             asset_name: darwin-arm64
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            asset_name: darwin-amd64
       fail-fast: false
 
     runs-on: ${{ matrix.os }}
@@ -282,42 +285,48 @@ jobs:
           
           CMAKE_ARGS=(-S "$PICOQUIC_DIR" -B "$PICOQUIC_BUILD_DIR"
             -DCMAKE_BUILD_TYPE=Release
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.5
             -DPICOQUIC_FETCH_PTLS=ON
+            -DBUILD_TESTING=OFF
+            -Dpicoquic_BUILD_TESTS=OFF
             -Wno-dev)
-          
+
           if [[ "${{ matrix.target }}" == "x86_64-apple-darwin" ]]; then
             CMAKE_ARGS+=(-DCMAKE_OSX_ARCHITECTURES=x86_64)
+            CMAKE_ARGS+=(-DCMAKE_OSX_DEPLOYMENT_TARGET=10.12)
             # Use x86_64 OpenSSL for cross-compilation
             CMAKE_ARGS+=(-DOPENSSL_ROOT_DIR=/usr/local/opt/openssl@3)
             CMAKE_ARGS+=(-DOPENSSL_INCLUDE_DIR=/usr/local/opt/openssl@3/include)
             CMAKE_ARGS+=(-DOPENSSL_CRYPTO_LIBRARY=/usr/local/opt/openssl@3/lib/libcrypto.dylib)
             CMAKE_ARGS+=(-DOPENSSL_SSL_LIBRARY=/usr/local/opt/openssl@3/lib/libssl.dylib)
             # Set C compiler flags to target x86_64
-            CMAKE_ARGS+=(-DCMAKE_C_FLAGS="-arch x86_64")
-            CMAKE_ARGS+=(-DCMAKE_CXX_FLAGS="-arch x86_64")
+            CMAKE_ARGS+=(-DCMAKE_C_FLAGS="-arch x86_64 -mmacosx-version-min=10.12")
+            CMAKE_ARGS+=(-DCMAKE_CXX_FLAGS="-arch x86_64 -mmacosx-version-min=10.12")
           fi
-          
+
           # Initial configure to fetch picotls
           cmake "${CMAKE_ARGS[@]}" || true
-          
+
           # Patch picotls CMake version requirement
           PTLS_CMAKE="$PICOQUIC_BUILD_DIR/_deps/picotls-src/CMakeLists.txt"
           if [ -f "$PTLS_CMAKE" ]; then
             sed -i '' 's/CMAKE_MINIMUM_REQUIRED(VERSION [0-9.]*)/CMAKE_MINIMUM_REQUIRED(VERSION 3.15)/' "$PTLS_CMAKE" || true
           fi
-          
-          # Reconfigure and build
+
+          # Reconfigure and build only required targets
           cmake "${CMAKE_ARGS[@]}"
-          cmake --build "$PICOQUIC_BUILD_DIR"
-          
-          # Create dummy fusion library for ARM (no AES-NI)
+
+          # Build targets - fusion only exists on x86_64 (uses AES-NI)
+          if [[ "${{ matrix.target }}" == "x86_64-apple-darwin" ]]; then
+            cmake --build "$PICOQUIC_BUILD_DIR" --target picoquic-core picotls-core picotls-fusion picotls-minicrypto picotls-openssl
+          else
+            cmake --build "$PICOQUIC_BUILD_DIR" --target picoquic-core picotls-core picotls-minicrypto picotls-openssl
+          fi
+
+          # Create dummy fusion library for ARM64 (no AES-NI support)
           PTLS_BUILD_DIR="$PICOQUIC_BUILD_DIR/_deps/picotls-build"
           if [ ! -f "$PTLS_BUILD_DIR/libpicotls-fusion.a" ]; then
-            if [[ "${{ matrix.target }}" == "x86_64-apple-darwin" ]]; then
-              echo 'void picotls_fusion_placeholder(void) {}' | cc -arch x86_64 -c -x c - -o /tmp/dummy.o
-            else
-              echo 'void picotls_fusion_placeholder(void) {}' | cc -c -x c - -o /tmp/dummy.o
-            fi
+            echo 'void picotls_fusion_placeholder(void) {}' | cc -c -x c - -o /tmp/dummy.o
             ar rcs "$PTLS_BUILD_DIR/libpicotls-fusion.a" /tmp/dummy.o
           fi
           
@@ -444,6 +453,42 @@ jobs:
           echo "PICOQUIC_DIR=${GITHUB_WORKSPACE}/slipstream-rust/vendor/picoquic" >> $GITHUB_ENV
           echo "PICOQUIC_FETCH_PTLS=ON" >> $GITHUB_ENV
           echo "PICOQUIC_AUTO_BUILD=1" >> $GITHUB_ENV
+
+      - name: Patch slipstream-ffi cross compiler env handling (macOS x86_64)
+        if: runner.os == 'macOS' && matrix.target == 'x86_64-apple-darwin'
+        working-directory: slipstream-rust
+        shell: bash
+        run: |
+          # Upstream slipstream-ffi build helper only respects CC/AR (host),
+          # which breaks cross-compiling C wrapper objects for x86_64 from arm64 runners.
+          # Patch it to honor CC_x86_64_apple_darwin / AR_x86_64_apple_darwin.
+          CC_RS="crates/slipstream-ffi/build/cc.rs"
+          if [ ! -f "$CC_RS" ]; then
+            echo "Error: Missing file: $CC_RS"
+            exit 1
+          fi
+          
+          # Check if already patched
+          if grep -q "CC_\"" "$CC_RS" || grep -q "CC_{target_key}" "$CC_RS"; then
+            echo "cc.rs already patched; skipping"
+            exit 0
+          fi
+          
+          # Patch resolve_cc function: insert target-specific check at the beginning
+          perl -i -pe '
+            if (/^pub\(crate\) fn resolve_cc\(target: &str\) -> String \{$/) {
+                $_ .= "\n    let target_key = target.replace('\''-'\'', \"_\");\n    let cc_target_key = format!(\"CC_{}\", target_key);\n    if let Ok(cc) = env::var(&cc_target_key) {\n        return cc;\n    }";
+            }
+          ' "$CC_RS"
+          
+          # Patch resolve_ar function: insert target-specific check at the beginning
+          perl -i -pe '
+            if (/^pub\(crate\) fn resolve_ar\(target: &str, cc: &str\) -> String \{$/) {
+                $_ .= "\n    let target_key = target.replace('\''-'\'', \"_\");\n    let ar_target_key = format!(\"AR_{}\", target_key);\n    if let Ok(ar) = env::var(&ar_target_key) {\n        return ar;\n    }";
+            }
+          ' "$CC_RS"
+          
+          echo "Patched crates/slipstream-ffi/build/cc.rs for CC_<target>/AR_<target>"
 
       - name: Patch macOS sockaddr compatibility
         if: runner.os == 'macOS'
@@ -574,14 +619,40 @@ jobs:
           if [[ "${{ matrix.target }}" == "aarch64-unknown-linux-gnu" ]] || [[ "${{ matrix.target }}" == "armv7-unknown-linux-gnueabihf" ]]; then
             export OPENSSL_STATIC=1
           fi
-          
+
           # For macOS ARM64 (native build on ARM runner), set OpenSSL paths
           if [[ "${{ matrix.target }}" == "aarch64-apple-darwin" ]]; then
             export OPENSSL_LIB_DIR=/opt/homebrew/opt/openssl@3/lib
             export OPENSSL_INCLUDE_DIR=/opt/homebrew/opt/openssl@3/include
             export CARGO_TARGET_AARCH64_APPLE_DARWIN_RUSTFLAGS="-C link-arg=-L/opt/homebrew/opt/openssl@3/lib"
           fi
-          
+
+          # For macOS Intel cross-compilation from ARM64 runner
+          if [[ "${{ matrix.target }}" == "x86_64-apple-darwin" ]]; then
+            export MACOSX_DEPLOYMENT_TARGET=10.12
+            # Create wrapper scripts for cross-compilation
+            # These are ONLY used for target-specific compilation, not for build scripts
+            mkdir -p /tmp/cross-bin
+            echo '#!/bin/bash' > /tmp/cross-bin/x86_64-cc
+            echo 'exec clang -arch x86_64 -mmacosx-version-min=10.12 "$@"' >> /tmp/cross-bin/x86_64-cc
+            chmod +x /tmp/cross-bin/x86_64-cc
+            echo '#!/bin/bash' > /tmp/cross-bin/x86_64-c++
+            echo 'exec clang++ -arch x86_64 -mmacosx-version-min=10.12 "$@"' >> /tmp/cross-bin/x86_64-c++
+            chmod +x /tmp/cross-bin/x86_64-c++
+
+            # IMPORTANT: Only set TARGET-SPECIFIC env vars, not global CC/CXX
+            # Global CC would break build script compilation (needs to run on host arm64)
+            export CC_x86_64_apple_darwin=/tmp/cross-bin/x86_64-cc
+            export CXX_x86_64_apple_darwin=/tmp/cross-bin/x86_64-c++
+            export CFLAGS_x86_64_apple_darwin="-arch x86_64 -mmacosx-version-min=10.12"
+            export CXXFLAGS_x86_64_apple_darwin="-arch x86_64 -mmacosx-version-min=10.12"
+
+            # Use x86_64 OpenSSL from Intel Homebrew prefix
+            export OPENSSL_LIB_DIR=/usr/local/opt/openssl@3/lib
+            export OPENSSL_INCLUDE_DIR=/usr/local/opt/openssl@3/include
+            export CARGO_TARGET_X86_64_APPLE_DARWIN_RUSTFLAGS="-C link-arg=-L/usr/local/opt/openssl@3/lib -C link-arg=-arch -C link-arg=x86_64"
+          fi
+
           if [[ "${{ runner.os }}" == "Windows" ]]; then
             cargo build --release --target ${{ matrix.target }} -p slipstream-client -p slipstream-server --features openssl-vendored
           else
@@ -616,7 +687,7 @@ jobs:
               -H "Authorization: token ${GITHUB_TOKEN}" \
               -H "Accept: application/vnd.github.v3+json" \
               "https://api.github.com/repos/${REPO}/releases" \
-              -d "{\"tag_name\":\"${TAG}\",\"name\":\"Release ${TAG}\",\"body\":\"Release for slipstream-rust commit ${TAG}\\n\\nThis release contains prebuilt binaries for:\\n- Linux (x86_64)\\n- Windows (x86_64)\\n- macOS (ARM64)\",\"draft\":false,\"prerelease\":false}"
+              -d "{\"tag_name\":\"${TAG}\",\"name\":\"Release ${TAG}\",\"body\":\"Release for slipstream-rust commit ${TAG}\\n\\nThis release contains prebuilt binaries for:\\n- Linux (x86_64)\\n- Windows (x86_64)\\n- macOS (ARM64)\\n- macOS (Intel x86_64)\",\"draft\":false,\"prerelease\":false}"
           else
             echo "Release for tag ${TAG} already exists"
           fi
