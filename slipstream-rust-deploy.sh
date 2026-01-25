@@ -756,7 +756,11 @@ get_user_input() {
     SOCKS_PASSWORD=""
     
     if [ "$TUNNEL_MODE" = "socks" ]; then
+        # Save the selected mode before loading config (which might overwrite it)
+        local saved_mode="$TUNNEL_MODE"
         if load_existing_config; then
+            # Restore the user's selected mode
+            TUNNEL_MODE="$saved_mode"
             if [[ -n "${SOCKS_AUTH_ENABLED:-}" ]]; then
                 local existing_auth="$SOCKS_AUTH_ENABLED"
                 local existing_username="${SOCKS_USERNAME:-}"
@@ -845,7 +849,11 @@ get_user_input() {
     SHADOWSOCKS_METHOD="aes-256-gcm"
 
     if [ "$TUNNEL_MODE" = "shadowsocks" ]; then
+        # Save the selected mode before loading config (which might overwrite it)
+        local saved_mode="$TUNNEL_MODE"
         if load_existing_config; then
+            # Restore the user's selected mode
+            TUNNEL_MODE="$saved_mode"
             if [[ -n "${SHADOWSOCKS_PORT:-}" ]]; then
                 local existing_ss_port="$SHADOWSOCKS_PORT"
                 local existing_ss_method="${SHADOWSOCKS_METHOD:-aes-256-gcm}"
