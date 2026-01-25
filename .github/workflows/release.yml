@@ -21,6 +21,9 @@ jobs:
           - os: macos-latest
             target: aarch64-apple-darwin
             asset_name: darwin-arm64
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            asset_name: darwin-amd64
       fail-fast: false
 
     runs-on: ${{ matrix.os }}
@@ -616,7 +619,7 @@ jobs:
               -H "Authorization: token ${GITHUB_TOKEN}" \
               -H "Accept: application/vnd.github.v3+json" \
               "https://api.github.com/repos/${REPO}/releases" \
-              -d "{\"tag_name\":\"${TAG}\",\"name\":\"Release ${TAG}\",\"body\":\"Release for slipstream-rust commit ${TAG}\\n\\nThis release contains prebuilt binaries for:\\n- Linux (x86_64)\\n- Windows (x86_64)\\n- macOS (ARM64)\",\"draft\":false,\"prerelease\":false}"
+              -d "{\"tag_name\":\"${TAG}\",\"name\":\"Release ${TAG}\",\"body\":\"Release for slipstream-rust commit ${TAG}\\n\\nThis release contains prebuilt binaries for:\\n- Linux (x86_64)\\n- Windows (x86_64)\\n- macOS (ARM64)\\n- macOS (Intel x86_64)\",\"draft\":false,\"prerelease\":false}"
           else
             echo "Release for tag ${TAG} already exists"
           fi
