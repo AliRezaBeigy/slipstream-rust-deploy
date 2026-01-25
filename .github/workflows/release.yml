@@ -285,9 +285,12 @@ jobs:
           
           CMAKE_ARGS=(-S "$PICOQUIC_DIR" -B "$PICOQUIC_BUILD_DIR"
             -DCMAKE_BUILD_TYPE=Release
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.5
             -DPICOQUIC_FETCH_PTLS=ON
+            -DBUILD_TESTING=OFF
+            -Dpicoquic_BUILD_TESTS=OFF
             -Wno-dev)
-          
+
           if [[ "${{ matrix.target }}" == "x86_64-apple-darwin" ]]; then
             CMAKE_ARGS+=(-DCMAKE_OSX_ARCHITECTURES=x86_64)
             # Use x86_64 OpenSSL for cross-compilation
@@ -299,19 +302,19 @@ jobs:
             CMAKE_ARGS+=(-DCMAKE_C_FLAGS="-arch x86_64")
             CMAKE_ARGS+=(-DCMAKE_CXX_FLAGS="-arch x86_64")
           fi
-          
+
           # Initial configure to fetch picotls
           cmake "${CMAKE_ARGS[@]}" || true
-          
+
           # Patch picotls CMake version requirement
           PTLS_CMAKE="$PICOQUIC_BUILD_DIR/_deps/picotls-src/CMakeLists.txt"
           if [ -f "$PTLS_CMAKE" ]; then
             sed -i '' 's/CMAKE_MINIMUM_REQUIRED(VERSION [0-9.]*)/CMAKE_MINIMUM_REQUIRED(VERSION 3.15)/' "$PTLS_CMAKE" || true
           fi
-          
-          # Reconfigure and build
+
+          # Reconfigure and build only required targets
           cmake "${CMAKE_ARGS[@]}"
-          cmake --build "$PICOQUIC_BUILD_DIR"
+          cmake --build "$PICOQUIC_BUILD_DIR" --target picoquic-core picotls-core picotls-fusion picotls-minicrypto picotls-openssl
           
           # Create dummy fusion library for ARM (no AES-NI)
           PTLS_BUILD_DIR="$PICOQUIC_BUILD_DIR/_deps/picotls-build"
