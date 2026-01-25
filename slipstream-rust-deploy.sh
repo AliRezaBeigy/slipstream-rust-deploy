@@ -668,14 +668,27 @@ install_dependencies() {
 
 # Function to get user input
 get_user_input() {
-    # Load existing configuration if available
     local existing_domain=""
     local existing_mode=""
+    local existing_ss_port=""
+    local existing_ss_method=""
+    local existing_ss_password=""
+    local existing_auth=""
+    local existing_username=""
 
     if load_existing_config; then
         existing_domain="$DOMAIN"
         existing_mode="$TUNNEL_MODE"
+        # Save Shadowsocks config if it exists
+        existing_ss_port="${SHADOWSOCKS_PORT:-}"
+        existing_ss_method="${SHADOWSOCKS_METHOD:-}"
+        existing_ss_password="${SHADOWSOCKS_PASSWORD:-}"
+        # Save SOCKS config if it exists
+        existing_auth="${SOCKS_AUTH_ENABLED:-}"
+        existing_username="${SOCKS_USERNAME:-}"
         print_status "Found existing configuration for domain: $existing_domain"
+        # Clear TUNNEL_MODE so user's selection isn't overwritten
+        unset TUNNEL_MODE
     fi
     
     local active_mode
@@ -756,16 +769,7 @@ get_user_input() {
     SOCKS_PASSWORD=""
     
     if [ "$TUNNEL_MODE" = "socks" ]; then
-        # Save the selected mode before loading config (which might overwrite it)
-        local saved_mode="$TUNNEL_MODE"
-        if load_existing_config; then
-            # Restore the user's selected mode
-            TUNNEL_MODE="$saved_mode"
-            if [[ -n "${SOCKS_AUTH_ENABLED:-}" ]]; then
-                local existing_auth="$SOCKS_AUTH_ENABLED"
-                local existing_username="${SOCKS_USERNAME:-}"
-            fi
-        fi
+        # Use saved SOCKS config from initial load (no need to reload)
         
         while true; do
             if [[ -n "${existing_auth:-}" ]]; then
@@ -849,16 +853,8 @@ get_user_input() {
     SHADOWSOCKS_METHOD="aes-256-gcm"
 
     if [ "$TUNNEL_MODE" = "shadowsocks" ]; then
-        # Save the selected mode before loading config (which might overwrite it)
-        local saved_mode="$TUNNEL_MODE"
-        if load_existing_config; then
-            # Restore the user's selected mode
-            TUNNEL_MODE="$saved_mode"
-            if [[ -n "${SHADOWSOCKS_PORT:-}" ]]; then
-                local existing_ss_port="$SHADOWSOCKS_PORT"
-                local existing_ss_method="${SHADOWSOCKS_METHOD:-aes-256-gcm}"
-            fi
-        fi
+        # Use saved Shadowsocks config from initial load (no need to reload)
+        # Variables are already saved as existing_ss_port, existing_ss_method, existing_ss_password
 
         # Get Shadowsocks port
         while true; do
