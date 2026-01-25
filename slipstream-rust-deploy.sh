@@ -1506,7 +1506,9 @@ setup_shadowsocks() {
 }
 EOF
 
-    chmod 640 /etc/shadowsocks-libev/config.json
+    # Set permissions to 644 so the DynamicUser in systemd can read it
+    chmod 644 /etc/shadowsocks-libev/config.json
+    chown root:root /etc/shadowsocks-libev/config.json
 
     # Create systemd service override if needed (for snap installations)
     if command -v snap &> /dev/null && snap list shadowsocks-libev &>/dev/null; then
