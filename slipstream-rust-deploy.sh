@@ -19,7 +19,7 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Global variables
-SCRIPT_URL="https://raw.githubusercontent.com/its-pixelion/slipstream-rust-deploy/master/slipstream-rust-deploy.sh"
+SCRIPT_URL="https://raw.githubusercontent.com/AliRezaBeigy/slipstream-rust-deploy/master/slipstream-rust-deploy.sh"
 INSTALL_DIR="/usr/local/bin"
 CONFIG_DIR="/etc/slipstream-rust"
 SYSTEMD_DIR="/etc/systemd/system"
@@ -29,7 +29,7 @@ SCRIPT_INSTALL_PATH="/usr/local/bin/slipstream-rust-deploy"
 BUILD_DIR="/opt/slipstream-rust"
 REPO_URL="https://github.com/Mygod/slipstream-rust.git"
 SLIPSTREAM_PORT="5300"
-RELEASE_URL="https://github.com/its-pixelion/slipstream-rust-deploy/releases/latest/download"
+RELEASE_URL="https://github.com/AliRezaBeigy/slipstream-rust-deploy/releases/latest/download"
 
 # Global variable to track if update is available
 UPDATE_AVAILABLE=false
@@ -969,13 +969,13 @@ download_prebuilt_binary() {
 
     print_status "Fetching latest release information..."
     local api_response
-    api_response=$(curl -fsSL "https://api.github.com/repos/its-pixelion/slipstream-rust-deploy/releases/latest" 2>/dev/null)
+    api_response=$(curl -fsSL "https://api.github.com/repos/AliRezaBeigy/slipstream-rust-deploy/releases/latest" 2>/dev/null)
     
     if [ -n "$api_response" ]; then
         latest_tag=$(echo "$api_response" | grep -o '"tag_name": "[^"]*"' | cut -d'"' -f4)
         if [ -n "$latest_tag" ]; then
             print_status "Found latest release tag: $latest_tag"
-            download_url="https://github.com/its-pixelion/slipstream-rust-deploy/releases/download/${latest_tag}/${binary_name}"
+            download_url="https://github.com/AliRezaBeigy/slipstream-rust-deploy/releases/download/${latest_tag}/${binary_name}"
         fi
     fi
 
@@ -1747,7 +1747,7 @@ detect_dnstt() {
         print_warning "Both services use port 5300 and will conflict."
         echo ""
         print_status "To uninstall dnstt, run the following command:"
-        echo -e "${GREEN}  bash <(curl -Ls https://raw.githubusercontent.com/its-pixelion/dnstt-deploy/main/dnstt-deploy.sh) uninstall${NC}"
+        echo -e "${GREEN}  bash <(curl -Ls https://raw.githubusercontent.com/AliRezaBeigy/dnstt-deploy/main/dnstt-deploy.sh) uninstall${NC}"
         echo ""
         print_question "Press Enter after uninstalling dnstt to continue, or Ctrl+C to exit: "
         read -r
