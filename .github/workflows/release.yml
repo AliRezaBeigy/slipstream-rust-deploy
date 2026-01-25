@@ -314,16 +314,18 @@ jobs:
 
           # Reconfigure and build only required targets
           cmake "${CMAKE_ARGS[@]}"
-          cmake --build "$PICOQUIC_BUILD_DIR" --target picoquic-core picotls-core picotls-fusion picotls-minicrypto picotls-openssl
-          
-          # Create dummy fusion library for ARM (no AES-NI)
+
+          # Build targets - fusion only exists on x86_64 (uses AES-NI)
+          if [[ "${{ matrix.target }}" == "x86_64-apple-darwin" ]]; then
+            cmake --build "$PICOQUIC_BUILD_DIR" --target picoquic-core picotls-core picotls-fusion picotls-minicrypto picotls-openssl
+          else
+            cmake --build "$PICOQUIC_BUILD_DIR" --target picoquic-core picotls-core picotls-minicrypto picotls-openssl
+          fi
+
+          # Create dummy fusion library for ARM64 (no AES-NI support)
           PTLS_BUILD_DIR="$PICOQUIC_BUILD_DIR/_deps/picotls-build"
           if [ ! -f "$PTLS_BUILD_DIR/libpicotls-fusion.a" ]; then
-            if [[ "${{ matrix.target }}" == "x86_64-apple-darwin" ]]; then
-              echo 'void picotls_fusion_placeholder(void) {}' | cc -arch x86_64 -c -x c - -o /tmp/dummy.o
-            else
-              echo 'void picotls_fusion_placeholder(void) {}' | cc -c -x c - -o /tmp/dummy.o
-            fi
+            echo 'void picotls_fusion_placeholder(void) {}' | cc -c -x c - -o /tmp/dummy.o
             ar rcs "$PTLS_BUILD_DIR/libpicotls-fusion.a" /tmp/dummy.o
           fi
           
@@ -580,14 +582,28 @@ jobs:
           if [[ "${{ matrix.target }}" == "aarch64-unknown-linux-gnu" ]] || [[ "${{ matrix.target }}" == "armv7-unknown-linux-gnueabihf" ]]; then
             export OPENSSL_STATIC=1
           fi
-          
+
           # For macOS ARM64 (native build on ARM runner), set OpenSSL paths
           if [[ "${{ matrix.target }}" == "aarch64-apple-darwin" ]]; then
             export OPENSSL_LIB_DIR=/opt/homebrew/opt/openssl@3/lib
             export OPENSSL_INCLUDE_DIR=/opt/homebrew/opt/openssl@3/include
             export CARGO_TARGET_AARCH64_APPLE_DARWIN_RUSTFLAGS="-C link-arg=-L/opt/homebrew/opt/openssl@3/lib"
           fi
-          
+
+          # For macOS Intel cross-compilation from ARM64 runner
+          if [[ "${{ matrix.target }}" == "x86_64-apple-darwin" ]]; then
+            # Set C/C++ compiler to cross-compile for x86_64
+            export CC="clang -arch x86_64"
+            export CXX="clang++ -arch x86_64"
+            export CFLAGS="-arch x86_64"
+            export CXXFLAGS="-arch x86_64"
+
+            # Use x86_64 OpenSSL from Intel Homebrew prefix
+            export OPENSSL_LIB_DIR=/usr/local/opt/openssl@3/lib
+            export OPENSSL_INCLUDE_DIR=/usr/local/opt/openssl@3/include
+            export CARGO_TARGET_X86_64_APPLE_DARWIN_RUSTFLAGS="-C link-arg=-L/usr/local/opt/openssl@3/lib -C link-arg=-arch -C link-arg=x86_64"
+          fi
+
           if [[ "${{ runner.os }}" == "Windows" ]]; then
             cargo build --release --target ${{ matrix.target }} -p slipstream-client -p slipstream-server --features openssl-vendored
           else
