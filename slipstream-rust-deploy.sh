@@ -1568,7 +1568,14 @@ EOF
     chown root:root /etc/shadowsocks-libev/config.json
 
     # Create systemd service override if needed (for snap installations)
+    local service_created=false
     if command -v snap &> /dev/null && snap list shadowsocks-libev &>/dev/null; then
+        local snap_bin
+        snap_bin=$(command -v snap)
+        if [ -z "$snap_bin" ]; then
+            snap_bin="/usr/bin/snap"
+        fi
+        
         # For snap installation, create a wrapper service
         cat > /etc/systemd/system/shadowsocks-libev-server@config.service << EOF
 [Unit]
@@ -1577,7 +1584,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/snap/bin/ss-server -c /etc/shadowsocks-libev/%i.json
+ExecStart=${snap_bin} run shadowsocks-libev.ss-server -c /etc/shadowsocks-libev/%i.json
 Restart=on-failure
 RestartSec=5
 
@@ -1585,10 +1592,19 @@ RestartSec=5
 WantedBy=multi-user.target
 EOF
         systemctl daemon-reload
+        service_created=true
     fi
 
     # Enable and start Shadowsocks service
-    if systemctl list-unit-files | grep -q "shadowsocks-libev-server@.service"; then
+    if [ "$service_created" = true ] || [ -f /etc/systemd/system/shadowsocks-libev-server@config.service ]; then
+        systemctl enable shadowsocks-libev-server@config
+        systemctl restart shadowsocks-libev-server@config
+        if ! systemctl is-active --quiet shadowsocks-libev-server@config; then
+            print_error "Shadowsocks service failed to start"
+            print_status "Check logs with: journalctl -u shadowsocks-libev-server@config -n 50"
+            exit 1
+        fi
+    elif systemctl list-unit-files | grep -q "shadowsocks-libev-server@.service"; then
         systemctl enable shadowsocks-libev-server@config
         systemctl restart shadowsocks-libev-server@config
         if ! systemctl is-active --quiet shadowsocks-libev-server@config; then
