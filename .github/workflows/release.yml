@@ -12,18 +12,21 @@ jobs:
     strategy:
       matrix:
         include:
-          # - os: ubuntu-latest
-          #   target: x86_64-unknown-linux-gnu
-          #   asset_name: linux-amd64
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             asset_name: windows-amd64
-          # - os: macos-latest
-          #   target: aarch64-apple-darwin
-          #   asset_name: darwin-arm64
-          # - os: macos-latest
-          #   target: x86_64-apple-darwin
-          #   asset_name: darwin-amd64
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            asset_name: linux-amd64
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            asset_name: linux-arm64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            asset_name: darwin-arm64
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            asset_name: darwin-amd64
       fail-fast: false
 
     runs-on: ${{ matrix.os }}
@@ -44,12 +47,24 @@ jobs:
           submodules: recursive
           path: slipstream-rust
 
+      - name: Set up QEMU
+        if: runner.os == 'Linux' && matrix.target == 'aarch64-unknown-linux-gnu'
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        if: runner.os == 'Linux' && matrix.target == 'aarch64-unknown-linux-gnu'
+        uses: docker/setup-buildx-action@v3
+        with:
+          platforms: linux/arm64,linux/amd64
+
       - name: Install Rust
+        if: runner.os != 'Linux' || matrix.target != 'aarch64-unknown-linux-gnu'
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
 
       - name: Install cross toolchain
+        if: runner.os != 'Linux' || matrix.target != 'aarch64-unknown-linux-gnu'
         uses: taiki-e/setup-cross-toolchain-action@v1
         with:
           target: ${{ env.TARGET }}
@@ -63,6 +78,7 @@ jobs:
           echo "short_commit=$(git rev-parse --short=7 HEAD)" >> $GITHUB_OUTPUT
 
       - name: Cache Rust dependencies
+        if: runner.os != 'Linux' || matrix.target != 'aarch64-unknown-linux-gnu'
         uses: actions/cache@v4
         with:
           path: |
@@ -77,10 +93,13 @@ jobs:
             ${{ runner.os }}-rust-
 
       - name: Install build dependencies (Linux)
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && matrix.target != 'aarch64-unknown-linux-gnu'
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake pkg-config libssl-dev gcc g++ perl
+          sudo apt-get install -y cmake pkg-config gcc g++ perl
+          if [[ "${{ matrix.target }}" == "x86_64-unknown-linux-gnu" ]]; then
+            sudo apt-get install -y libssl-dev
+          fi
 
       - name: Install build dependencies (macOS)
         if: runner.os == 'macOS'
@@ -167,8 +186,41 @@ jobs:
             echo "OPENSSL_ROOT_DIR=/opt/homebrew/opt/openssl@3" >> $GITHUB_ENV
           fi
 
+      - name: Build with Docker buildx (Linux ARM64)
+        if: runner.os == 'Linux' && matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          # Create a temporary directory for the build output
+          mkdir -p docker-build-output
+          
+          mkdir -p slipstream-rust/target/aarch64-unknown-linux-gnu/release
+          
+          # Build the image for linux/arm64 and load it using a pipe
+          # This works around the --load limitation with cross-platform builds
+          docker buildx build \
+            --platform linux/arm64 \
+            --file Dockerfile.arm64 \
+            --tag slipstream-build:arm64 \
+            --output type=docker,dest=- \
+            . | docker load
+          
+          # Run the container with --platform flag to use QEMU emulation
+          # Mount slipstream-rust as read-write so build artifacts can be written
+          docker run --rm \
+            --platform linux/arm64 \
+            -v "${{ github.workspace }}/slipstream-rust:/workspace/slipstream-rust" \
+            -v "${{ github.workspace }}/docker-build-output:/workspace/output" \
+            slipstream-build:arm64
+          
+          sudo chown -R $(id -u):$(id -g) slipstream-rust/target/ 2>/dev/null || true
+          
+          cp docker-build-output/slipstream-client slipstream-rust/target/aarch64-unknown-linux-gnu/release/
+          cp docker-build-output/slipstream-server slipstream-rust/target/aarch64-unknown-linux-gnu/release/
+          
+          # Verify binaries exist
+          ls -lh slipstream-rust/target/aarch64-unknown-linux-gnu/release/
+
       - name: Build picoquic (Linux)
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && matrix.target != 'aarch64-unknown-linux-gnu'
         working-directory: slipstream-rust
         run: |
           bash scripts/build_picoquic.sh
@@ -418,6 +470,7 @@ jobs:
           fi
 
       - name: Build slipstream binaries
+        if: runner.os != 'Linux' || matrix.target != 'aarch64-unknown-linux-gnu'
         working-directory: slipstream-rust
         shell: bash
         env:
@@ -499,32 +552,32 @@ jobs:
           [ "${{ runner.os }}" != "Windows" ] && chmod +x build_assets/*
           echo "Binaries prepared successfully"
 
-      # - name: Create release if needed
-      #   shell: bash
-      #   env:
-      #     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      #   run: |
-      #     TAG="${{ steps.get_commit.outputs.short_commit }}"
-      #     if ! gh release view "$TAG" &>/dev/null; then
-      #       gh release create "$TAG" \
-      #         --title "Release $TAG" \
-      #         --notes "Release for slipstream-rust commit $TAG
+      - name: Create release if needed
+        shell: bash
+        env:
+         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+         TAG="${{ steps.get_commit.outputs.short_commit }}"
+         if ! gh release view "$TAG" &>/dev/null; then
+           gh release create "$TAG" \
+             --title "Release $TAG" \
+             --notes "Release for slipstream-rust commit $TAG
+        
+         This release contains prebuilt binaries for:
+         - Linux (x86_64)
+         - Windows (x86_64)
+         - macOS (ARM64)
+         - macOS (Intel x86_64)"
+         fi
 
-      #     This release contains prebuilt binaries for:
-      #     - Linux (x86_64)
-      #     - Windows (x86_64)
-      #     - macOS (ARM64)
-      #     - macOS (Intel x86_64)"
-      #     fi
-
-      # - name: Upload binaries to release
-      #   uses: svenstaro/upload-release-action@v2
-      #   with:
-      #     repo_token: ${{ secrets.GITHUB_TOKEN }}
-      #     file: build_assets/slipstream-*
-      #     file_glob: true
-      #     tag: ${{ steps.get_commit.outputs.short_commit }}
-      #     overwrite: true
+      - name: Upload binaries to release
+        uses: svenstaro/upload-release-action@v2
+        with:
+         repo_token: ${{ secrets.GITHUB_TOKEN }}
+         file: build_assets/slipstream-*
+         file_glob: true
+         tag: ${{ steps.get_commit.outputs.short_commit }}
+         overwrite: true
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
