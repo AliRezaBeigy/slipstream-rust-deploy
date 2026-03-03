@@ -1062,6 +1062,24 @@ get_asset_name() {
 
 # Function to download prebuilt binary
 download_prebuilt_binary() {
+    # Check if 'file' utility is available, install if missing
+	if ! command -v file >/dev/null 2>&1; then
+	    print_status "'file' utility not found. Installing..."
+	
+	    case "$PKG_MANAGER" in
+	        apt)
+	            sudo apt update && sudo apt install -y file
+	            ;;
+	        dnf|yum)
+	            sudo "$PKG_MANAGER" install -y file
+	            ;;
+	        *)
+	            print_error "Unsupported package manager. Please install 'file' manually."
+	            exit 1
+	            ;;
+	    esac
+	fi
+    
     local asset_name
     if ! asset_name=$(get_asset_name); then
         print_warning "No prebuilt binary available for this architecture"
