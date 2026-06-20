@@ -249,18 +249,8 @@ uninstall_slipstream() {
         rm -f "/usr/local/bin/slipstream-restore-iptables.sh"
     fi
 
-    # Remove iptables rules (best effort)
-    print_status "Removing iptables rules..."
-    iptables -D INPUT -p udp --dport "$SLIPSTREAM_PORT" -j ACCEPT 2>/dev/null || true
-    local interface
-    interface=$(ip route | grep default | awk '{print $5}' | head -1)
-    if [[ -n "$interface" ]]; then
-        iptables -t nat -D PREROUTING -i "$interface" -p udp --dport 53 -j REDIRECT --to-ports "$SLIPSTREAM_PORT" 2>/dev/null || true
-        if command -v ip6tables &> /dev/null; then
-            ip6tables -D INPUT -p udp --dport "$SLIPSTREAM_PORT" -j ACCEPT 2>/dev/null || true
-            ip6tables -t nat -D PREROUTING -i "$interface" -p udp --dport 53 -j REDIRECT --to-ports "$SLIPSTREAM_PORT" 2>/dev/null || true
-        fi
-    fi
+    # Remove firewall rules (best effort)
+    remove_firewall_rules
 
     # Ask about removing the deploy script itself
     print_question "Do you also want to remove the slipstream-rust-deploy script? (y/N): "
@@ -359,12 +349,12 @@ detect_active_mode() {
         echo "shadowsocks"
         return 0
     fi
-    
+
     if systemctl is-active --quiet danted 2>/dev/null; then
         echo "socks"
         return 0
     fi
-    
+
     echo ""
     return 0
 }
@@ -670,7 +660,12 @@ install_dependencies() {
                         fi
                         ;;
                     "iptables")
-                        packages_to_install+=("iptables" "iptables-persistent")
+                        packages_to_install+=("iptables")
+                        if is_ufw_installed; then
+                            print_status "UFW detected; skipping iptables-persistent to preserve UFW"
+                        else
+                            packages_to_install+=("iptables-persistent")
+                        fi
                         ;;
                     "openssl-dev")
                         packages_to_install+=("libssl-dev")
@@ -727,7 +722,7 @@ get_user_input() {
         # Clear TUNNEL_MODE so user's selection isn't overwritten
         unset TUNNEL_MODE
     fi
-    
+
     local active_mode
     active_mode=$(detect_active_mode)
     if [[ -n "$active_mode" ]]; then
@@ -807,10 +802,10 @@ get_user_input() {
     SOCKS_AUTH_ENABLED="no"
     SOCKS_USERNAME=""
     SOCKS_PASSWORD=""
-    
+
     if [ "$selected_tunnel_mode" = "socks" ]; then
         # Use saved SOCKS config from initial load (no need to reload)
-        
+
         while true; do
             if [[ -n "${existing_auth:-}" ]]; then
                 local auth_status="disabled"
@@ -822,7 +817,7 @@ get_user_input() {
                 print_question "Enable username/password authentication for SOCKS proxy? [y/N]: "
             fi
             read -r enable_auth
-            
+
             if [[ -z "$enable_auth" && -n "${existing_auth:-}" ]]; then
                 SOCKS_AUTH_ENABLED="$existing_auth"
                 if [[ "$existing_auth" == "yes" ]]; then
@@ -830,11 +825,11 @@ get_user_input() {
                 fi
                 break
             fi
-            
+
             case $enable_auth in
                 [Yy]|[Yy][Ee][Ss])
                     SOCKS_AUTH_ENABLED="yes"
-                    
+
                     while true; do
                         if [[ -n "${existing_username:-}" && "$SOCKS_AUTH_ENABLED" == "yes" ]]; then
                             print_question "Enter SOCKS username (current: $existing_username): "
@@ -842,30 +837,30 @@ get_user_input() {
                             print_question "Enter SOCKS username: "
                         fi
                         read -r SOCKS_USERNAME
-                        
+
                         if [[ -z "$SOCKS_USERNAME" && -n "${existing_username:-}" ]]; then
                             SOCKS_USERNAME="$existing_username"
                         fi
-                        
+
                         if [[ -n "$SOCKS_USERNAME" ]]; then
                             break
                         else
                             print_error "Please enter a valid username"
                         fi
                     done
-                    
+
                     while true; do
                         print_question "Enter SOCKS password: "
                         read -rs SOCKS_PASSWORD
                         echo ""  # New line after hidden password input
-                        
+
                         if [[ -z "$SOCKS_PASSWORD" ]]; then
                             print_error "Please enter a valid password"
                         else
                             print_question "Confirm SOCKS password: "
                             read -rs SOCKS_PASSWORD_CONFIRM
                             echo ""  # New line after hidden password input
-                            
+
                             if [[ "$SOCKS_PASSWORD" != "$SOCKS_PASSWORD_CONFIRM" ]]; then
                                 print_error "Passwords do not match. Please try again."
                                 SOCKS_PASSWORD=""
@@ -1065,7 +1060,7 @@ download_prebuilt_binary() {
     # Check if 'file' utility is available, install if missing
 	if ! command -v file >/dev/null 2>&1; then
 	    print_status "'file' utility not found. Installing..."
-	
+
 	    case "$PKG_MANAGER" in
 	        apt)
 	            sudo apt update && sudo apt install -y file
@@ -1079,7 +1074,7 @@ download_prebuilt_binary() {
 	            ;;
 	    esac
 	fi
-    
+
     local asset_name
     if ! asset_name=$(get_asset_name); then
         print_warning "No prebuilt binary available for this architecture"
@@ -1096,7 +1091,7 @@ download_prebuilt_binary() {
     print_status "Fetching latest release information..."
     local api_response
     api_response=$(curl -fsSL "https://api.github.com/repos/AliRezaBeigy/slipstream-rust-deploy/releases/latest" 2>/dev/null)
-    
+
     if [ -n "$api_response" ]; then
         latest_tag=$(echo "$api_response" | grep -o '"tag_name": "[^"]*"' | cut -d'"' -f4)
         if [ -n "$latest_tag" ]; then
@@ -1281,6 +1276,138 @@ generate_certificates() {
     fi
 }
 
+# Return true when the ufw command is available.
+is_ufw_installed() {
+    command -v ufw &> /dev/null
+}
+
+# Return true when UFW is enabled and managing the firewall.
+is_ufw_active() {
+    is_ufw_installed && ufw status 2>/dev/null | grep -q "Status: active"
+}
+
+# Detect the primary network interface used for default routing.
+detect_network_interface() {
+    local interface
+    interface=$(ip route | grep default | awk '{print $5}' | head -1)
+    if [[ -z "$interface" ]]; then
+        interface=$(ip link show | grep -E "^[0-9]+: (eth|ens|enp)" | head -1 | cut -d':' -f2 | awk '{print $1}')
+        if [[ -z "$interface" ]]; then
+            interface="eth0"
+            print_warning "Could not detect network interface, using eth0 as fallback" >&2
+        else
+            print_status "Detected network interface: $interface" >&2
+        fi
+    else
+        print_status "Using network interface: $interface" >&2
+    fi
+    echo "$interface"
+}
+
+# Remove slipstream-rust NAT redirect markers from a UFW before.rules file.
+remove_ufw_nat_rules_from_file() {
+    local file="$1"
+    if [ -f "$file" ] && grep -q "# BEGIN slipstream-rust" "$file"; then
+        sed -i '/# BEGIN slipstream-rust/,/# END slipstream-rust/d' "$file"
+    fi
+}
+
+# Insert DNS NAT redirect rules into a UFW before.rules file.
+add_ufw_nat_rules_to_file() {
+    local file="$1"
+    local interface="$2"
+
+    if [ ! -f "$file" ]; then
+        print_warning "$file not found, skipping NAT redirect rules"
+        return 0
+    fi
+
+    if ! grep -q '^\*nat' "$file"; then
+        print_warning "$file has no *nat section, skipping NAT redirect rules"
+        return 0
+    fi
+
+    remove_ufw_nat_rules_from_file "$file"
+
+    awk -v iface="$interface" -v port="$SLIPSTREAM_PORT" '
+        /^\*nat$/ { in_nat=1 }
+        in_nat && /^COMMIT$/ {
+            print "# BEGIN slipstream-rust"
+            print "-A PREROUTING -i " iface " -p udp --dport 53 -j REDIRECT --to-ports " port
+            print "# END slipstream-rust"
+            in_nat=0
+        }
+        { print }
+    ' "$file" > "${file}.slipstream.tmp" && mv "${file}.slipstream.tmp" "$file"
+}
+
+# Configure UFW port allows and NAT redirect via before.rules.
+configure_ufw() {
+    local interface
+    interface=$(detect_network_interface)
+
+    print_status "Configuring UFW for slipstream-rust (preserving UFW, not using iptables-persistent)..."
+
+    # Remove iptables restore service if switching from a previous iptables-based install
+    if systemctl is-active --quiet slipstream-restore-iptables 2>/dev/null; then
+        systemctl stop slipstream-restore-iptables 2>/dev/null || true
+    fi
+    if systemctl is-enabled --quiet slipstream-restore-iptables 2>/dev/null; then
+        systemctl disable slipstream-restore-iptables 2>/dev/null || true
+    fi
+    rm -f "${SYSTEMD_DIR}/slipstream-restore-iptables.service" "/usr/local/bin/slipstream-restore-iptables.sh"
+    systemctl daemon-reload 2>/dev/null || true
+
+    ufw allow "$SLIPSTREAM_PORT"/udp
+    ufw allow 53/udp
+
+    add_ufw_nat_rules_to_file "/etc/ufw/before.rules" "$interface"
+
+    if command -v ip6tables &> /dev/null && [ -f /proc/net/if_inet6 ]; then
+        local ipv6_addrs
+        if command -v timeout &> /dev/null; then
+            ipv6_addrs=$(timeout 2 ip -6 addr show 2>/dev/null | grep -E "inet6 [0-9a-fA-F:]+" | grep -v "::1" | grep -v "fe80:" || true)
+        else
+            ipv6_addrs=$(ip -6 addr show 2>/dev/null | grep -E "inet6 [0-9a-fA-F:]+" | grep -v "::1" | grep -v "fe80:" || true)
+        fi
+        if [ -n "$ipv6_addrs" ]; then
+            add_ufw_nat_rules_to_file "/etc/ufw/before6.rules" "$interface"
+        fi
+    fi
+
+    ufw reload
+    print_status "UFW configured successfully"
+}
+
+# Remove slipstream-rust firewall rules from UFW and/or iptables.
+remove_firewall_rules() {
+    print_status "Removing firewall rules..."
+
+    if is_ufw_installed; then
+        remove_ufw_nat_rules_from_file "/etc/ufw/before.rules"
+        remove_ufw_nat_rules_from_file "/etc/ufw/before6.rules"
+
+        if is_ufw_active; then
+            ufw delete allow "$SLIPSTREAM_PORT"/udp 2>/dev/null || true
+            ufw delete allow 53/udp 2>/dev/null || true
+            ufw reload 2>/dev/null || true
+        fi
+    fi
+
+    if command -v iptables &> /dev/null; then
+        iptables -D INPUT -p udp --dport "$SLIPSTREAM_PORT" -j ACCEPT 2>/dev/null || true
+        local interface
+        interface=$(ip route | grep default | awk '{print $5}' | head -1)
+        if [[ -n "$interface" ]]; then
+            iptables -t nat -D PREROUTING -i "$interface" -p udp --dport 53 -j REDIRECT --to-ports "$SLIPSTREAM_PORT" 2>/dev/null || true
+            if command -v ip6tables &> /dev/null; then
+                ip6tables -D INPUT -p udp --dport "$SLIPSTREAM_PORT" -j ACCEPT 2>/dev/null || true
+                ip6tables -t nat -D PREROUTING -i "$interface" -p udp --dport 53 -j REDIRECT --to-ports "$SLIPSTREAM_PORT" 2>/dev/null || true
+            fi
+        fi
+    fi
+}
+
 # Function to configure iptables rules
 configure_iptables() {
     print_status "Configuring iptables rules for DNS redirection..."
@@ -1291,21 +1418,8 @@ configure_iptables() {
         exit 1
     fi
 
-    # Get the primary network interface
     local interface
-    interface=$(ip route | grep default | awk '{print $5}' | head -1)
-    if [[ -z "$interface" ]]; then
-        # Try alternative method to get interface
-        interface=$(ip link show | grep -E "^[0-9]+: (eth|ens|enp)" | head -1 | cut -d':' -f2 | awk '{print $1}')
-        if [[ -z "$interface" ]]; then
-            interface="eth0"  # fallback
-            print_warning "Could not detect network interface, using eth0 as fallback"
-        else
-            print_status "Detected network interface: $interface"
-        fi
-    else
-        print_status "Using network interface: $interface"
-    fi
+    interface=$(detect_network_interface)
 
     # IPv4 rules
     print_status "Setting up IPv4 iptables rules..."
@@ -1331,7 +1445,7 @@ configure_iptables() {
         else
             ipv6_addrs=$(ip -6 addr show 2>/dev/null | grep -E "inet6 [0-9a-fA-F:]+" | grep -v "::1" | grep -v "fe80:" || true)
         fi
-        
+
         if [ -n "$ipv6_addrs" ]; then
             local addr_count
             addr_count=$(echo "$ipv6_addrs" | wc -l)
@@ -1365,6 +1479,11 @@ configure_iptables() {
 
 # Function to ensure iptables persistence packages are installed
 ensure_iptables_persistence() {
+    if is_ufw_installed; then
+        print_status "UFW is installed; skipping iptables-persistent (conflicts with UFW on Ubuntu/Debian)"
+        return 0
+    fi
+
     print_status "Ensuring iptables persistence packages are installed..."
 
     case $PKG_MANAGER in
@@ -1402,12 +1521,9 @@ create_iptables_restore_service() {
 
     local restore_script="/usr/local/bin/slipstream-restore-iptables.sh"
     local interface
-    interface=$(ip route | grep default | awk '{print $5}' | head -1)
+    interface=$(detect_network_interface)
     if [[ -z "$interface" ]]; then
-        interface=$(ip link show | grep -E "^[0-9]+: (eth|ens|enp)" | head -1 | cut -d':' -f2 | awk '{print $1}')
-        if [[ -z "$interface" ]]; then
-            interface="eth0"
-        fi
+        interface="eth0"
     fi
 
     # Create restore script
@@ -1428,7 +1544,7 @@ if command -v iptables &> /dev/null; then
     if ! iptables -C INPUT -p udp --dport "$SLIPSTREAM_PORT" -j ACCEPT 2>/dev/null; then
         iptables -I INPUT -p udp --dport "$SLIPSTREAM_PORT" -j ACCEPT
     fi
-    
+
     if ! iptables -t nat -C PREROUTING -i "$INTERFACE" -p udp --dport 53 -j REDIRECT --to-ports "$SLIPSTREAM_PORT" 2>/dev/null; then
         iptables -t nat -I PREROUTING -i "$INTERFACE" -p udp --dport 53 -j REDIRECT --to-ports "$SLIPSTREAM_PORT"
     fi
@@ -1439,7 +1555,7 @@ if command -v ip6tables &> /dev/null && [ -f /proc/net/if_inet6 ]; then
     if ! ip6tables -C INPUT -p udp --dport "$SLIPSTREAM_PORT" -j ACCEPT 2>/dev/null; then
         ip6tables -I INPUT -p udp --dport "$SLIPSTREAM_PORT" -j ACCEPT 2>/dev/null || true
     fi
-    
+
     if ! ip6tables -t nat -C PREROUTING -i "$INTERFACE" -p udp --dport 53 -j REDIRECT --to-ports "$SLIPSTREAM_PORT" 2>/dev/null; then
         ip6tables -t nat -I PREROUTING -i "$INTERFACE" -p udp --dport 53 -j REDIRECT --to-ports "$SLIPSTREAM_PORT" 2>/dev/null || true
     fi
@@ -1477,6 +1593,12 @@ save_iptables_rules() {
 
     # Ensure persistence packages are installed
     ensure_iptables_persistence
+
+    if is_ufw_installed; then
+        print_status "UFW is installed; using slipstream-restore-iptables service for persistence"
+        create_iptables_restore_service
+        return 0
+    fi
 
     case $PKG_MANAGER in
         dnf|yum)
@@ -1559,12 +1681,9 @@ configure_firewall() {
         firewall-cmd --reload
         print_status "Firewalld configured successfully"
 
-    # Check if ufw is available and active
-    elif command -v ufw &> /dev/null && ufw status | grep -q "Status: active"; then
-        print_status "Configuring active ufw..."
-        ufw allow "$SLIPSTREAM_PORT"/udp
-        ufw allow 53/udp
-        print_status "UFW configured successfully"
+    elif is_ufw_active; then
+        configure_ufw
+        return 0
 
     else
         print_status "No active firewall service detected"
@@ -1574,15 +1693,15 @@ configure_firewall() {
         if command -v firewall-cmd &> /dev/null; then
             print_status "  - firewalld (inactive)"
         fi
-        if command -v ufw &> /dev/null; then
+        if is_ufw_installed; then
             print_status "  - ufw (inactive)"
+            print_status "UFW is installed but inactive; using iptables without iptables-persistent to preserve UFW"
         fi
 
         print_status "Relying on iptables rules only"
         print_status "If you have a firewall active, manually allow ports $SLIPSTREAM_PORT/udp and 53/udp"
     fi
 
-    # Configure iptables rules regardless of firewall service
     configure_iptables
 }
 
