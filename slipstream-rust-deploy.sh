@@ -1312,6 +1312,41 @@ remove_ufw_nat_rules_from_file() {
     fi
 }
 
+# Ensure a UFW rules file has a minimal *nat table (required for DNS port redirect).
+ensure_ufw_nat_section() {
+    local file="$1"
+
+    if grep -q '^\*nat' "$file"; then
+        return 0
+    fi
+
+    print_status "$file has no *nat section; adding minimal NAT table..."
+
+    if grep -q '^\*filter' "$file"; then
+        awk '
+            /^\*filter$/ && !done {
+                print "# NAT table (added by slipstream-rust-deploy)"
+                print "*nat"
+                print ":PREROUTING ACCEPT [0:0]"
+                print ":POSTROUTING ACCEPT [0:0]"
+                print "COMMIT"
+                print ""
+                done=1
+            }
+            { print }
+        ' "$file" > "${file}.slipstream.tmp" && mv "${file}.slipstream.tmp" "$file"
+    else
+        {
+            echo ""
+            echo "# NAT table (added by slipstream-rust-deploy)"
+            echo "*nat"
+            echo ":PREROUTING ACCEPT [0:0]"
+            echo ":POSTROUTING ACCEPT [0:0]"
+            echo "COMMIT"
+        } >> "$file"
+    fi
+}
+
 # Insert DNS NAT redirect rules into a UFW before.rules file.
 add_ufw_nat_rules_to_file() {
     local file="$1"
@@ -1319,17 +1354,13 @@ add_ufw_nat_rules_to_file() {
 
     if [ ! -f "$file" ]; then
         print_warning "$file not found, skipping NAT redirect rules"
-        return 0
+        return 1
     fi
 
-    if ! grep -q '^\*nat' "$file"; then
-        print_warning "$file has no *nat section, skipping NAT redirect rules"
-        return 0
-    fi
-
+    ensure_ufw_nat_section "$file"
     remove_ufw_nat_rules_from_file "$file"
 
-    awk -v iface="$interface" -v port="$SLIPSTREAM_PORT" '
+    if ! awk -v iface="$interface" -v port="$SLIPSTREAM_PORT" '
         /^\*nat$/ { in_nat=1 }
         in_nat && /^COMMIT$/ {
             print "# BEGIN slipstream-rust"
@@ -1338,7 +1369,21 @@ add_ufw_nat_rules_to_file() {
             in_nat=0
         }
         { print }
-    ' "$file" > "${file}.slipstream.tmp" && mv "${file}.slipstream.tmp" "$file"
+    ' "$file" > "${file}.slipstream.tmp"; then
+        print_warning "Failed to update $file with NAT redirect rules"
+        rm -f "${file}.slipstream.tmp"
+        return 1
+    fi
+
+    mv "${file}.slipstream.tmp" "$file"
+
+    if ! grep -q "# BEGIN slipstream-rust" "$file"; then
+        print_warning "NAT redirect rules were not written to $file"
+        return 1
+    fi
+
+    print_status "NAT redirect rules added to $file"
+    return 0
 }
 
 # Configure UFW port allows and NAT redirect via before.rules.
@@ -1361,7 +1406,13 @@ configure_ufw() {
     ufw allow "$SLIPSTREAM_PORT"/udp
     ufw allow 53/udp
 
-    add_ufw_nat_rules_to_file "/etc/ufw/before.rules" "$interface"
+    local nat_v4_ok=false
+
+    if add_ufw_nat_rules_to_file "/etc/ufw/before.rules" "$interface"; then
+        nat_v4_ok=true
+    else
+        print_error "Failed to configure IPv4 DNS NAT redirect in UFW"
+    fi
 
     if command -v ip6tables &> /dev/null && [ -f /proc/net/if_inet6 ]; then
         local ipv6_addrs
@@ -1371,12 +1422,20 @@ configure_ufw() {
             ipv6_addrs=$(ip -6 addr show 2>/dev/null | grep -E "inet6 [0-9a-fA-F:]+" | grep -v "::1" | grep -v "fe80:" || true)
         fi
         if [ -n "$ipv6_addrs" ]; then
-            add_ufw_nat_rules_to_file "/etc/ufw/before6.rules" "$interface"
+            if ! add_ufw_nat_rules_to_file "/etc/ufw/before6.rules" "$interface"; then
+                print_warning "Failed to configure IPv6 DNS NAT redirect in UFW"
+            fi
         fi
     fi
 
     ufw reload
-    print_status "UFW configured successfully"
+
+    if [ "$nat_v4_ok" = true ]; then
+        print_status "UFW configured successfully"
+    else
+        print_error "UFW port allows were added but DNS redirect (53 -> $SLIPSTREAM_PORT) is not configured"
+        exit 1
+    fi
 }
 
 # Remove slipstream-rust firewall rules from UFW and/or iptables.
