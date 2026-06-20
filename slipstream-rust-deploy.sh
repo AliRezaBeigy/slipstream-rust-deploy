@@ -1775,6 +1775,22 @@ detect_ssh_port() {
     echo "$ssh_port"
 }
 
+# Return true when the system has non-loopback IPv6 addresses configured.
+has_ipv6_addresses() {
+    if [ ! -f /proc/net/if_inet6 ]; then
+        return 1
+    fi
+
+    local ipv6_addrs
+    if command -v timeout &> /dev/null; then
+        ipv6_addrs=$(timeout 2 ip -6 addr show 2>/dev/null | grep -E "inet6 [0-9a-fA-F:]+" | grep -v "::1" | grep -v "fe80:" || true)
+    else
+        ipv6_addrs=$(ip -6 addr show 2>/dev/null | grep -E "inet6 [0-9a-fA-F:]+" | grep -v "::1" | grep -v "fe80:" || true)
+    fi
+
+    [ -n "$ipv6_addrs" ]
+}
+
 # Function to install and configure Dante SOCKS proxy
 setup_dante() {
     print_status "Setting up Dante SOCKS proxy..."
@@ -1797,6 +1813,14 @@ setup_dante() {
     fi
 
     local socks_method="none"
+    local ipv6_enabled=false
+
+    if has_ipv6_addresses; then
+        ipv6_enabled=true
+        print_status "IPv6 detected; enabling IPv6 SOCKS destinations in Dante"
+    else
+        print_status "IPv6 not configured; blocking IPv6 SOCKS destinations in Dante"
+    fi
     
     if [[ "${SOCKS_AUTH_ENABLED:-no}" == "yes" && -n "${SOCKS_USERNAME:-}" && -n "${SOCKS_PASSWORD:-}" ]]; then
         socks_method="username"
@@ -1849,13 +1873,13 @@ client pass {
     log: error
 }
 
-# SOCKS rules - allow SOCKS requests to anywhere
+# SOCKS rules - allow IPv4 destinations
 socks pass {
     from: 127.0.0.0/8 to: 0.0.0.0/0
     command: bind connect udpassociate
 EOF
 
-    if [[ -n "$passwd_file" ]]; then
+    if [[ "$socks_method" == "username" ]]; then
         cat >> /etc/danted.conf << EOF
     method: username
 EOF
@@ -1864,8 +1888,37 @@ EOF
     cat >> /etc/danted.conf << EOF
     log: error
 }
+EOF
 
-# Block IPv6 if not properly configured
+    if [ "$ipv6_enabled" = true ]; then
+        cat >> /etc/danted.conf << EOF
+
+# Client rules - allow IPv6 localhost
+client pass {
+    from: ::1/128 to: ::/0
+    log: error
+}
+
+# SOCKS rules - allow IPv6 destinations (source is still IPv4 localhost via slipstream)
+socks pass {
+    from: 127.0.0.0/8 to: ::/0
+    command: bind connect
+EOF
+
+        if [[ "$socks_method" == "username" ]]; then
+            cat >> /etc/danted.conf << EOF
+    method: username
+EOF
+        fi
+
+        cat >> /etc/danted.conf << EOF
+    log: error
+}
+EOF
+    else
+        cat >> /etc/danted.conf << EOF
+
+# Block IPv6 when not configured on this host
 socks block {
     from: 0.0.0.0/0 to: ::/0
     log: error
@@ -1876,6 +1929,7 @@ client block {
     log: error
 }
 EOF
+    fi
 
     # Enable and start Dante service
     systemctl enable danted
