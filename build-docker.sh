@@ -49,6 +49,9 @@ case "$RUST_TARGET" in
     CARGO_FEATURES="--features openssl-vendored"
     CARGO_EXTRA="-Z build-std=std,panic_abort"
     ;;
+  *-unknown-linux-musl)
+    CARGO_FEATURES="--features openssl-vendored"
+    ;;
 esac
 
 # 32-bit MIPS: std has no AtomicU64; use portable_atomic

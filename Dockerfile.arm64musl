@@ -1,0 +1,33 @@
+FROM alpine:3.20
+
+RUN apk add --no-cache \
+    bash \
+    curl \
+    cmake \
+    pkgconfig \
+    gcc \
+    g++ \
+    perl \
+    openssl-dev \
+    git \
+    ca-certificates \
+    musl-dev \
+    make \
+    linux-headers
+
+ENV RUSTUP_HOME=/usr/local/rustup \
+    CARGO_HOME=/usr/local/cargo \
+    PATH=/usr/local/cargo/bin:$PATH
+
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+
+ENV RUST_TARGET=aarch64-unknown-linux-musl \
+    CC_aarch64_unknown_linux_musl=gcc \
+    CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=gcc
+
+WORKDIR /workspace
+
+COPY build-docker.sh /workspace/build-docker.sh
+RUN chmod +x /workspace/build-docker.sh
+
+CMD ["/workspace/build-docker.sh"]
